@@ -118,3 +118,15 @@ class Document(Base):
         "KnowledgeBase",
         back_populates="documents",
     )
+
+    @property
+    def file_name(self) -> str:
+        return self.original_name
+
+    @property
+    def content_type(self) -> str | None:
+        return self.mime_type
+
+    @property
+    def page_count(self) -> int | None:
+        return (self.extraction_metadata or {}).get("page_count")

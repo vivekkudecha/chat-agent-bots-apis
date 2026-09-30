@@ -316,23 +316,36 @@ class VectorStoreService:
     async def delete_knowledge_base(
         self,
         knowledge_base_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
     ) -> None:
+
+        must_conditions = [
+            FieldCondition(
+                key="knowledge_base_id",
+                match=MatchValue(
+                    value=str(
+                        knowledge_base_id
+                    )
+                ),
+            )
+        ]
+
+        if user_id is not None:
+            must_conditions.append(
+                FieldCondition(
+                    key="user_id",
+                    match=MatchValue(
+                        value=str(user_id)
+                    ),
+                )
+            )
 
         await self.client.delete(
             collection_name=(
                 self.collection_name
             ),
             points_selector=Filter(
-                must=[
-                    FieldCondition(
-                        key="knowledge_base_id",
-                        match=MatchValue(
-                            value=str(
-                                knowledge_base_id
-                            )
-                        ),
-                    )
-                ]
+                must=must_conditions
             ),
             wait=True,
         )

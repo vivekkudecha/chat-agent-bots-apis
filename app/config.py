@@ -44,6 +44,8 @@ class Settings(BaseSettings):
 
     EMBEDDING_MODEL: str = "BAAI/bge-base-en-v1.5"
 
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+
     # ---------------------------------------------------------
     # vLLM
     # ---------------------------------------------------------

@@ -59,7 +59,7 @@ class BotBase(BaseModel):
 # Create Bot
 # ---------------------------------------------------------
 
-class BotCreate(BotBase):
+class BotCreateRequest(BotBase):
 
     slug: str = Field(
         ...,
@@ -86,7 +86,7 @@ class BotCreate(BotBase):
 # Update Bot
 # ---------------------------------------------------------
 
-class BotUpdate(BaseModel):
+class BotUpdateRequest(BaseModel):
 
     name: str | None = Field(
         default=None,
@@ -102,6 +102,19 @@ class BotUpdate(BaseModel):
 
     is_api_enabled: bool | None = None
 
+    system_instruction: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=50000,
+    )
+
+    welcome_message: str | None = None
+
+    conversation_starters: list[str] | None = Field(
+        default=None,
+        max_length=10,
+    )
+
     metadata_: dict[str, Any] | None = Field(
         default=None,
         alias="metadata",
@@ -111,6 +124,15 @@ class BotUpdate(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+
+
+# ---------------------------------------------------------
+# Aliases
+# ---------------------------------------------------------
+
+BotCreate = BotCreateRequest
+BotUpdate = BotUpdateRequest
+
 
 
 # ---------------------------------------------------------

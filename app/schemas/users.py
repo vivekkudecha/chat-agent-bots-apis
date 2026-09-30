@@ -102,3 +102,30 @@ class UserAdminUpdate(BaseModel):
     is_active: bool | None = None
 
     is_superuser: bool | None = None
+
+
+# ---------------------------------------------------------
+# Password Change
+# ---------------------------------------------------------
+
+class PasswordChangeRequest(BaseModel):
+    current_password: SecretStr = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+    )
+    new_password: SecretStr = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+    )
+
+
+# ---------------------------------------------------------
+# Aliases
+# ---------------------------------------------------------
+
+RegisterRequest = UserCreate
+RegisterResponse = UserResponse
+LoginRequest = UserLogin
+UserUpdateRequest = UserUpdate

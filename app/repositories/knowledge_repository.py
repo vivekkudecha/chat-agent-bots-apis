@@ -281,8 +281,23 @@ class KnowledgeRepository:
     @staticmethod
     async def detach_from_bot(
         db: AsyncSession,
-        link: BotKnowledgeBase,
+        link: BotKnowledgeBase | None = None,
+        *,
+        bot_id: uuid.UUID | None = None,
+        knowledge_base_id: uuid.UUID | None = None,
     ) -> None:
 
-        await db.delete(link)
-        await db.flush()
+        if link is None:
+            if bot_id and knowledge_base_id:
+                link = await KnowledgeRepository.get_bot_link(
+                    db,
+                    bot_id=bot_id,
+                    knowledge_base_id=knowledge_base_id,
+                )
+
+        if link is not None:
+            await db.delete(link)
+            await db.flush()
+
+    # Alias for compatibility
+    get_bot_knowledge_base = get_bot_link

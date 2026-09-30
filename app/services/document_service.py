@@ -1,9 +1,11 @@
 from app.integrations.storage import get_storage_provider
+from dataclasses import dataclass
 import hashlib
 import uuid
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
+from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
@@ -34,6 +36,12 @@ from app.core.exceptions import (
     DocumentNotFoundException,
     ValidationException,
 )
+
+
+@dataclass
+class DocumentListResult:
+    items: list[Any]
+    total: int
 
 
 class DocumentService:
@@ -80,6 +88,147 @@ class DocumentService:
                 sha256.update(block)
 
         return sha256.hexdigest()
+
+    # =====================================================
+    # UPLOAD
+    # =====================================================
+
+    async def upload(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        knowledge_base_id: uuid.UUID,
+        file: UploadFile,
+    ) -> Document:
+
+        knowledge_base = await KnowledgeRepository.get_owned(
+            db,
+            knowledge_base_id=knowledge_base_id,
+            user_id=user_id,
+        )
+
+        if not knowledge_base:
+            raise KnowledgeBaseNotFoundException()
+
+        storage_key = await self.storage.save_upload(
+            file=file,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+        )
+
+        local_path = await self.storage.get_local_path(storage_key)
+        checksum = self.calculate_checksum(local_path)
+
+        existing = await DocumentRepository.find_by_checksum(
+            db,
+            knowledge_base_id=knowledge_base_id,
+            checksum=checksum,
+        )
+
+        if existing:
+            await self.storage.delete(storage_key)
+            raise DuplicateDocumentException()
+
+        document = await DocumentRepository.create(
+            db,
+            user_id=user_id,
+            knowledge_base_id=knowledge_base_id,
+            original_name=file.filename or "unknown",
+            mime_type=file.content_type,
+            file_size=local_path.stat().st_size,
+            storage_provider="local",
+            storage_key=storage_key,
+            checksum=checksum,
+        )
+
+        return document
+
+    # =====================================================
+    # GET
+    # =====================================================
+
+    async def get(
+        self,
+        db: AsyncSession,
+        *,
+        document_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> Document:
+
+        document = await DocumentRepository.get_owned(
+            db,
+            document_id=document_id,
+            user_id=user_id,
+        )
+
+        if not document:
+            raise DocumentNotFoundException()
+
+        return document
+
+    # =====================================================
+    # LIST
+    # =====================================================
+
+    async def list(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        knowledge_base_id: uuid.UUID,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> DocumentListResult:
+
+        knowledge_base = await KnowledgeRepository.get_owned(
+            db,
+            knowledge_base_id=knowledge_base_id,
+            user_id=user_id,
+        )
+
+        if not knowledge_base:
+            raise KnowledgeBaseNotFoundException()
+
+        offset = (page - 1) * page_size
+
+        items, total = await DocumentRepository.list_by_knowledge_base(
+            db,
+            knowledge_base_id=knowledge_base_id,
+            user_id=user_id,
+            offset=offset,
+            limit=page_size,
+        )
+
+        return DocumentListResult(
+            items=items,
+            total=total,
+        )
+
+    # =====================================================
+    # PREPARE RETRY
+    # =====================================================
+
+    async def prepare_retry(
+        self,
+        db: AsyncSession,
+        *,
+        document_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> Document:
+
+        document = await self.get(
+            db,
+            document_id=document_id,
+            user_id=user_id,
+        )
+
+        await DocumentRepository.mark_queued(
+            db,
+            document,
+        )
+
+        return document
 
     # =====================================================
     # REGISTER DOCUMENT

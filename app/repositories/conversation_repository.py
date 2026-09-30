@@ -274,18 +274,25 @@ class ConversationRepository:
         *,
         conversation_id: uuid.UUID,
         limit: int = 20,
+        before: uuid.UUID | None = None,
     ) -> list[Message]:
 
+        query = select(Message).where(
+            Message.conversation_id == conversation_id
+        )
+
+        if before:
+            subquery = (
+                select(Message.created_at)
+                .where(Message.id == before)
+                .scalar_subquery()
+            )
+            query = query.where(Message.created_at < subquery)
+
         result = await db.execute(
-            select(Message)
-            .where(
-                Message.conversation_id
-                == conversation_id
-            )
-            .order_by(
+            query.order_by(
                 Message.created_at.desc()
-            )
-            .limit(limit)
+            ).limit(limit)
         )
 
         messages = list(

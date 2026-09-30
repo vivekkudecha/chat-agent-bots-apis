@@ -61,6 +61,74 @@ class DocumentResponse(BaseModel):
     )
 
 
+# =========================================================
+# DOCUMENT DETAIL RESPONSE
+# Used for GET /documents/{document_id}
+# =========================================================
+
+class DocumentDetailResponse(BaseModel):
+
+    model_config = ConfigDict(
+        from_attributes=True
+    )
+
+    id: uuid.UUID
+
+    knowledge_base_id: uuid.UUID
+
+    user_id: uuid.UUID
+
+    # -----------------------------------------------------
+    # File information
+    # -----------------------------------------------------
+
+    file_name: str
+
+    content_type: str | None = None
+
+    file_size: int | None = None
+
+    checksum: str | None = None
+
+    # -----------------------------------------------------
+    # Storage
+    # -----------------------------------------------------
+
+    storage_key: str
+
+    # -----------------------------------------------------
+    # Processing
+    # -----------------------------------------------------
+
+    status: str
+
+    error_message: str | None = None
+
+    # -----------------------------------------------------
+    # Extraction / indexing
+    # -----------------------------------------------------
+
+    chunk_count: int = 0
+
+    page_count: int | None = None
+
+    extraction_metadata: dict[
+        str,
+        Any,
+    ] = Field(
+        default_factory=dict
+    )
+
+    # -----------------------------------------------------
+    # Timestamps
+    # -----------------------------------------------------
+
+    created_at: datetime
+
+    updated_at: datetime
+
+    processed_at: datetime | None = None
+
 # ---------------------------------------------------------
 # Document Upload Response
 # ---------------------------------------------------------

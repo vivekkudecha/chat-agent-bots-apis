@@ -186,3 +186,58 @@ class BotGuardrailResponse(BaseModel):
     model_config = ConfigDict(
         from_attributes=True,
     )
+
+
+class BotGuardrailCreate(BaseModel):
+
+    guardrail_id: uuid.UUID
+
+    action: GuardrailAction = "block"
+
+    priority: int = Field(
+        default=100,
+        ge=0,
+        le=10_000,
+    )
+
+    is_enabled: bool = True
+
+    config: dict[
+        str,
+        Any,
+    ] = Field(
+        default_factory=dict
+    )
+
+
+# =========================================================
+# Guardrail Test
+# =========================================================
+
+class GuardrailExecutionResponse(BaseModel):
+    code: str
+    handler: str
+    action: str
+    passed: bool
+    message: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class GuardrailTestRequest(BaseModel):
+    stage: str = Field(
+        ...,
+        pattern="^(input|retrieval|tool|output)$",
+    )
+    text: str = Field(
+        ...,
+        min_length=1,
+    )
+
+
+class GuardrailTestResponse(BaseModel):
+    allowed: bool
+    original_text: str
+    final_text: str
+    warnings: list[str] = Field(default_factory=list)
+    executions: list[GuardrailExecutionResponse] = Field(default_factory=list)
+

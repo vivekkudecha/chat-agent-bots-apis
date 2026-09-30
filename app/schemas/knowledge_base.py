@@ -200,3 +200,92 @@ class BotKnowledgeBaseResponse(BaseModel):
     model_config = ConfigDict(
         from_attributes=True,
     )
+
+
+# =========================================================
+# DOCUMENT SUMMARY
+# =========================================================
+
+class KnowledgeBaseDocumentResponse(BaseModel):
+
+    model_config = ConfigDict(
+        from_attributes=True
+    )
+
+    id: uuid.UUID
+
+    file_name: str
+
+    content_type: str | None = None
+
+    file_size: int | None = None
+
+    status: str
+
+    chunk_count: int = 0
+
+    created_at: datetime
+
+    processed_at: datetime | None = None
+
+
+# =========================================================
+# KNOWLEDGE BASE DETAIL RESPONSE
+# =========================================================
+
+class KnowledgeBaseDetailResponse(BaseModel):
+
+    model_config = ConfigDict(
+        from_attributes=True
+    )
+
+    id: uuid.UUID
+
+    user_id: uuid.UUID
+
+    name: str
+
+    description: str | None = None
+
+    # -----------------------------------------------------
+    # RAG / chunking configuration
+    # -----------------------------------------------------
+
+    chunking_config: dict[
+        str,
+        Any,
+    ] = Field(
+        default_factory=dict
+    )
+
+    # -----------------------------------------------------
+    # Statistics
+    # -----------------------------------------------------
+
+    document_count: int = 0
+
+    total_chunks: int = 0
+
+    # -----------------------------------------------------
+    # Documents
+    # -----------------------------------------------------
+
+    documents: list[
+        KnowledgeBaseDocumentResponse
+    ] = Field(
+        default_factory=list
+    )
+
+    # -----------------------------------------------------
+    # State
+    # -----------------------------------------------------
+
+    is_active: bool = True
+
+    # -----------------------------------------------------
+    # Timestamps
+    # -----------------------------------------------------
+
+    created_at: datetime
+
+    updated_at: datetime
