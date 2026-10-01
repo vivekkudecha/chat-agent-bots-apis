@@ -1,7 +1,9 @@
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+import httpx
 from openai import AsyncOpenAI
 
 from app.config import settings
@@ -9,6 +11,8 @@ from app.config import settings
 from app.core.exceptions import (
     ModelExecutionException,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================
@@ -88,13 +92,62 @@ class OpenAICompatibleProvider(
         base_url_normalized = base_url.rstrip("/")
         if base_url_normalized.endswith("/api"):
             base_url_normalized = base_url_normalized[:-4] + "/v1"
+        elif not base_url_normalized.endswith("/v1"):
+            base_url_normalized = f"{base_url_normalized}/v1"
+
+        logger.info(f"Using OpenAI-compatible LLM provider at: {base_url_normalized}")
+
+        http_client = httpx.AsyncClient(
+            verify=settings.LLM_VERIFY_SSL,
+            trust_env=settings.LLM_TRUST_ENV,
+            timeout=settings.LLM_TIMEOUT_SECONDS,
+        )
 
         self.client = AsyncOpenAI(
             base_url=base_url_normalized,
             api_key=api_key,
             timeout=settings.LLM_TIMEOUT_SECONDS,
             max_retries=0,
+            http_client=http_client,
         )
+
+    @staticmethod
+    def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not messages:
+            return []
+
+        system_parts: list[str] = []
+        convo_messages: list[dict[str, Any]] = []
+
+        for msg in messages:
+            role = msg.get("role")
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+
+            if role == "system":
+                system_parts.append(content)
+            else:
+                convo_messages.append({"role": role, "content": content})
+
+        normalized: list[dict[str, Any]] = []
+
+        if system_parts:
+            normalized.append({
+                "role": "system",
+                "content": "\n\n".join(system_parts),
+            })
+
+        for msg in convo_messages:
+            role = msg.get("role")
+            content = msg.get("content")
+            if normalized and normalized[-1]["role"] == role:
+                prev = normalized[-1]["content"]
+                normalized[-1]["content"] = f"{prev}\n\n{content}".strip()
+            else:
+                normalized.append({"role": role, "content": content})
+
+        return normalized
 
     # =====================================================
     # NORMAL CHAT
@@ -113,13 +166,17 @@ class OpenAICompatibleProvider(
 
         try:
 
+            normalized_messages = self._normalize_messages(messages)
+
             kwargs: dict[str, Any] = {
                 "model": model,
-                "messages": messages,
+                "messages": normalized_messages,
                 "temperature": temperature,
                 "top_p": top_p,
                 "max_tokens": max_tokens,
             }
+
+            logger.debug("LLM chat request kwargs: %s", kwargs)
 
             if tools:
                 kwargs["tools"] = tools
@@ -132,6 +189,8 @@ class OpenAICompatibleProvider(
                     **kwargs
                 )
             )
+
+            logger.debug("LLM chat response: %s", response)
 
             if not response.choices:
                 raise ModelExecutionException(
@@ -181,9 +240,9 @@ class OpenAICompatibleProvider(
             raise
 
         except Exception as exc:
-
+            logger.error("LLM request failed: %s", exc, exc_info=True)
             raise ModelExecutionException(
-                "LLM request failed."
+                f"LLM request failed: {exc}"
             ) from exc
 
     # =====================================================
@@ -203,9 +262,11 @@ class OpenAICompatibleProvider(
 
         try:
 
+            normalized_messages = self._normalize_messages(messages)
+
             kwargs: dict[str, Any] = {
                 "model": model,
-                "messages": messages,
+                "messages": normalized_messages,
                 "temperature": temperature,
                 "top_p": top_p,
                 "max_tokens": max_tokens,
@@ -244,9 +305,9 @@ class OpenAICompatibleProvider(
                     yield content
 
         except Exception as exc:
-
+            logger.error("LLM streaming request failed: %s", exc, exc_info=True)
             raise ModelExecutionException(
-                "LLM streaming request failed."
+                f"LLM streaming request failed: {exc}"
             ) from exc
 
 

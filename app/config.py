@@ -61,6 +61,10 @@ class Settings(BaseSettings):
 
     VLLM_TIMEOUT: int = 120
 
+    LLM_VERIFY_SSL: bool = True
+
+    LLM_TRUST_ENV: bool = True
+
     # ---------------------------------------------------------
     # Redis
     # ---------------------------------------------------------
