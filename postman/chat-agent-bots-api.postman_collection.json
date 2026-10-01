@@ -1,0 +1,2374 @@
+{
+  "info": {
+    "_postman_id": "74799c3d-999a-455d-ad01-5504de9475a4",
+    "name": "Chat Agent Bots API",
+    "description": "### Multi-Bot AI Platform API Collection\n\nComprehensive Postman Collection covering all endpoints and payloads for **Chat Agent Bots API** powered by FastAPI, PostgreSQL, Qdrant, and vLLM.\n\n#### Features\n- **Pre-configured Bearer Token Authentication** inheriting across the collection.\n- **Automated Token & UUID Capture**: Registration, Login, Create Bot, Create KB, and other creation endpoints automatically save tokens and UUIDs into Collection Variables (`access_token`, `bot_id`, `knowledge_base_id`, `conversation_id`, etc.).\n- **Complete Request Payloads**: Every POST, PUT, and PATCH endpoint contains ready-to-test JSON payloads matching the FastAPI Pydantic schema validation rules.\n- **Query & Path Parameters**: All standard pagination, filtering, and path parameters are defined with sensible defaults.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000",
+      "type": "string",
+      "description": "Base URL of the FastAPI backend server"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string",
+      "description": "JWT Access Token populated automatically upon login or registration"
+    },
+    {
+      "key": "refresh_token",
+      "value": "",
+      "type": "string",
+      "description": "JWT Refresh Token populated automatically upon login or registration"
+    },
+    {
+      "key": "bot_id",
+      "value": "11111111-1111-1111-1111-111111111111",
+      "type": "string",
+      "description": "UUID of the active bot"
+    },
+    {
+      "key": "knowledge_base_id",
+      "value": "22222222-2222-2222-2222-222222222222",
+      "type": "string",
+      "description": "UUID of the active knowledge base"
+    },
+    {
+      "key": "document_id",
+      "value": "33333333-3333-3333-3333-333333333333",
+      "type": "string",
+      "description": "UUID of the uploaded document"
+    },
+    {
+      "key": "conversation_id",
+      "value": "44444444-4444-4444-4444-444444444444",
+      "type": "string",
+      "description": "UUID of the active conversation thread"
+    },
+    {
+      "key": "model_id",
+      "value": "55555555-5555-5555-5555-555555555555",
+      "type": "string",
+      "description": "UUID of the registered AI model"
+    },
+    {
+      "key": "guardrail_id",
+      "value": "66666666-6666-6666-6666-666666666666",
+      "type": "string",
+      "description": "UUID of the guardrail definition"
+    },
+    {
+      "key": "bot_guardrail_id",
+      "value": "77777777-7777-7777-7777-777777777777",
+      "type": "string",
+      "description": "UUID of the attached bot-guardrail association"
+    },
+    {
+      "key": "version_id",
+      "value": "88888888-8888-8888-8888-888888888888",
+      "type": "string",
+      "description": "UUID of the published bot version"
+    }
+  ],
+  "item": [
+    {
+      "name": "01. Authentication",
+      "item": [
+        {
+          "name": "Register User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201 || pm.response.code === 200) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.access_token) {",
+                  "        pm.collectionVariables.set('access_token', jsonData.access_token);",
+                  "        console.log('Access token saved:', jsonData.access_token);",
+                  "    }",
+                  "    if (jsonData.refresh_token) {",
+                  "        pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Admin User\",\n  \"email\": \"admin@example.com\",\n  \"password\": \"SecurePassword123!\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Registers a new user account with email, name, and password. Returns user profile details."
+          },
+          "response": []
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.access_token) {",
+                  "        pm.collectionVariables.set('access_token', jsonData.access_token);",
+                  "        console.log('Access token saved to collection variable');",
+                  "    }",
+                  "    if (jsonData.refresh_token) {",
+                  "        pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"SecurePassword123!\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Authenticates user credentials and returns JWT access_token and refresh_token. Automatically sets collection variables on success."
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.access_token) {",
+                  "        pm.collectionVariables.set('access_token', jsonData.access_token);",
+                  "    }",
+                  "    if (jsonData.refresh_token) {",
+                  "        pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refresh_token\": \"{{refresh_token}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Exchanges a valid refresh token for a new access token and refresh token pair."
+          },
+          "response": []
+        }
+      ],
+      "description": "User registration, login, and JWT token refresh endpoints."
+    },
+    {
+      "name": "02. Users",
+      "item": [
+        {
+          "name": "Get Current User Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "me"
+              ]
+            },
+            "description": "Returns details of the currently authenticated user based on the Bearer JWT token."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Admin User Updated\",\n  \"email\": \"admin.updated@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "me"
+              ]
+            },
+            "description": "Updates current user's profile details such as name and email."
+          },
+          "response": []
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"current_password\": \"SecurePassword123!\",\n  \"new_password\": \"NewSecurePassword456!\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/me/change-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "me",
+                "change-password"
+              ]
+            },
+            "description": "Changes the password of the currently authenticated user. Requires current password verification."
+          },
+          "response": []
+        }
+      ],
+      "description": "Profile inspection, profile update, and password management."
+    },
+    {
+      "name": "03. AI Models",
+      "item": [
+        {
+          "name": "Create AI Model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.id) {",
+                  "        pm.collectionVariables.set('model_id', jsonData.id);",
+                  "        console.log('Saved model_id:', jsonData.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"openai\",\n  \"model_key\": \"gpt-4o-mini\",\n  \"display_name\": \"GPT-4o Mini\",\n  \"name\": \"gpt-4o-mini\",\n  \"model_type\": \"chat\",\n  \"endpoint_url\": \"https://api.openai.com/v1\",\n  \"context_window\": 128000,\n  \"capabilities\": {\n    \"streaming\": true,\n    \"tools\": true,\n    \"vision\": true,\n    \"json_mode\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "models"
+              ]
+            },
+            "description": "Registers a new AI model provider and configuration. Supports providers like openai, anthropic, vllm, ollama, etc."
+          },
+          "response": []
+        },
+        {
+          "name": "List AI Models",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/models?active_only=true&page=1&page_size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "active_only",
+                  "value": "true",
+                  "description": "Filter only active models"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20",
+                  "description": "Items per page (max 100)"
+                }
+              ]
+            },
+            "description": "Retrieves a paginated list of registered AI models."
+          },
+          "response": []
+        },
+        {
+          "name": "Get AI Model by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/models/:model_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "models",
+                ":model_id"
+              ],
+              "variable": [
+                {
+                  "key": "model_id",
+                  "value": "{{model_id}}",
+                  "description": "UUID of the AI model"
+                }
+              ]
+            },
+            "description": "Fetches detailed metadata of a specific AI model by UUID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update AI Model",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"display_name\": \"GPT-4o Mini (Updated Production)\",\n  \"name\": \"gpt-4o-mini-prod\",\n  \"endpoint_url\": \"https://api.openai.com/v1\",\n  \"context_window\": 128000,\n  \"capabilities\": {\n    \"streaming\": true,\n    \"tools\": true,\n    \"vision\": true,\n    \"json_mode\": true\n  },\n  \"is_active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/models/:model_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "models",
+                ":model_id"
+              ],
+              "variable": [
+                {
+                  "key": "model_id",
+                  "value": "{{model_id}}",
+                  "description": "UUID of the AI model to update"
+                }
+              ]
+            },
+            "description": "Updates AI model configurations, active state, context window or capabilities."
+          },
+          "response": []
+        },
+        {
+          "name": "Configure Model for Bot",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model_id\": \"{{model_id}}\",\n  \"is_primary\": true,\n  \"temperature\": 0.7,\n  \"top_p\": 1.0,\n  \"max_tokens\": 2048,\n  \"frequency_penalty\": 0.0,\n  \"presence_penalty\": 0.0,\n  \"stop\": [\n    \"<|endoftext|>\"\n  ],\n  \"extra_config\": {\n    \"response_format\": {\n      \"type\": \"text\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/models/bots/:bot_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "models",
+                "bots",
+                ":bot_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot to configure"
+                }
+              ]
+            },
+            "description": "Binds an AI model to a bot with specific inference parameters (temperature, max_tokens, penalty, primary flag)."
+          },
+          "response": []
+        },
+        {
+          "name": "List Bot Model Configurations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/models/bots/:bot_id/configs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "models",
+                "bots",
+                ":bot_id",
+                "configs"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                }
+              ]
+            },
+            "description": "Lists all model configurations and hyperparameter settings assigned to a specific bot."
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Model from Bot",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/models/bots/:bot_id/:model_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "models",
+                "bots",
+                ":bot_id",
+                ":model_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                },
+                {
+                  "key": "model_id",
+                  "value": "{{model_id}}",
+                  "description": "UUID of the model to unbind"
+                }
+              ]
+            },
+            "description": "Removes a specific AI model configuration binding from a bot."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete AI Model",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/models/:model_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "models",
+                ":model_id"
+              ],
+              "variable": [
+                {
+                  "key": "model_id",
+                  "value": "{{model_id}}",
+                  "description": "UUID of the model to delete"
+                }
+              ]
+            },
+            "description": "Permanently deletes an AI model registration."
+          },
+          "response": []
+        }
+      ],
+      "description": "AI model registry and per-bot hyperparameter configuration."
+    },
+    {
+      "name": "04. Bots",
+      "item": [
+        {
+          "name": "Create Bot",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.id) {",
+                  "        pm.collectionVariables.set('bot_id', jsonData.id);",
+                  "        console.log('Saved bot_id:', jsonData.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Enterprise Support Assistant\",\n  \"slug\": \"enterprise-support-assistant\",\n  \"description\": \"AI-powered customer and technical support bot with knowledge base access\",\n  \"system_instruction\": \"You are a professional enterprise support assistant. Answer queries clearly, helpfully, and concisely based on provided context.\",\n  \"welcome_message\": \"Hello! How can I help you today with our platform?\",\n  \"conversation_starters\": [\n    \"How do I set up SSO authentication?\",\n    \"Where can I find API rate limit guidelines?\",\n    \"Can you help troubleshoot connection errors?\"\n  ],\n  \"visibility\": \"private\",\n  \"avatar_url\": \"https://example.com/assets/bot-avatar.png\",\n  \"metadata\": {\n    \"department\": \"Technical Support\",\n    \"tier\": \"enterprise\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bots",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bots"
+              ]
+            },
+            "description": "Creates a new bot with system instructions, persona configuration, starter questions, and metadata."
+          },
+          "response": []
+        },
+        {
+          "name": "List Bots",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bots?page=1&page_size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bots"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20",
+                  "description": "Items per page (max 100)"
+                }
+              ]
+            },
+            "description": "Lists all bots owned by the authenticated user with pagination."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Bot by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bots/:bot_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bots",
+                ":bot_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                }
+              ]
+            },
+            "description": "Retrieves complete details of a bot including attached knowledge bases and active models."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Bot",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Enterprise Support Assistant (v2)\",\n  \"description\": \"Updated enterprise support assistant with specialized cloud troubleshooting capabilities\",\n  \"system_instruction\": \"You are an advanced enterprise support agent. Provide accurate, polite, and direct technical answers.\",\n  \"welcome_message\": \"Welcome back! What platform issue can I help resolve today?\",\n  \"conversation_starters\": [\n    \"SSO configuration guide\",\n    \"Troubleshoot database timeout\",\n    \"Check billing and invoices\"\n  ],\n  \"visibility\": \"private\",\n  \"is_api_enabled\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bots/:bot_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bots",
+                ":bot_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot to update"
+                }
+              ]
+            },
+            "description": "Updates bot profile, system prompt, conversation starters, or visibility."
+          },
+          "response": []
+        },
+        {
+          "name": "Publish Bot Version",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.id) {",
+                  "        pm.collectionVariables.set('version_id', jsonData.id);",
+                  "        console.log('Saved version_id:', jsonData.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bots/:bot_id/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bots",
+                ":bot_id",
+                "publish"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot to publish"
+                }
+              ]
+            },
+            "description": "Creates an immutable snapshot version of the bot configuration, prompts, and attached resources."
+          },
+          "response": []
+        },
+        {
+          "name": "List Bot Versions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bots/:bot_id/versions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bots",
+                ":bot_id",
+                "versions"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                }
+              ]
+            },
+            "description": "Retrieves the historical published versions of a bot."
+          },
+          "response": []
+        },
+        {
+          "name": "Attach Knowledge Base to Bot",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bots/:bot_id/knowledge-bases/:knowledge_base_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bots",
+                ":bot_id",
+                "knowledge-bases",
+                ":knowledge_base_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                },
+                {
+                  "key": "knowledge_base_id",
+                  "value": "{{knowledge_base_id}}",
+                  "description": "UUID of the knowledge base to attach"
+                }
+              ]
+            },
+            "description": "Associates a knowledge base with the bot so that user queries can retrieve context via RAG."
+          },
+          "response": []
+        },
+        {
+          "name": "Detach Knowledge Base from Bot",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bots/:bot_id/knowledge-bases/:knowledge_base_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bots",
+                ":bot_id",
+                "knowledge-bases",
+                ":knowledge_base_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                },
+                {
+                  "key": "knowledge_base_id",
+                  "value": "{{knowledge_base_id}}",
+                  "description": "UUID of the knowledge base to detach"
+                }
+              ]
+            },
+            "description": "Detaches a knowledge base from the bot."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Bot",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/bots/:bot_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bots",
+                ":bot_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot to delete"
+                }
+              ]
+            },
+            "description": "Deletes a bot and its associated configurations."
+          },
+          "response": []
+        }
+      ],
+      "description": "Bot creation, version publishing, and knowledge base binding."
+    },
+    {
+      "name": "05. Knowledge Bases",
+      "item": [
+        {
+          "name": "Create Knowledge Base",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.id) {",
+                  "        pm.collectionVariables.set('knowledge_base_id', jsonData.id);",
+                  "        console.log('Saved knowledge_base_id:', jsonData.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Platform Docs & Runbooks\",\n  \"description\": \"Technical documentation, architecture guides, and operational runbooks\",\n  \"embedding_model\": \"text-embedding-3-small\",\n  \"chunking_config\": {\n    \"strategy\": \"recursive\",\n    \"chunk_size\": 800,\n    \"chunk_overlap\": 100,\n    \"separators\": [\n      \"\\n\\n\",\n      \"\\n\",\n      \" \",\n      \"\"\n    ]\n  },\n  \"retrieval_config\": {\n    \"search_type\": \"semantic\",\n    \"top_k\": 5,\n    \"score_threshold\": 0.75,\n    \"enable_reranking\": false,\n    \"reranker_model\": null,\n    \"hybrid_alpha\": 0.5\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/knowledge-bases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "knowledge-bases"
+              ]
+            },
+            "description": "Creates a new Knowledge Base with chunking strategies (chunk_size, chunk_overlap) and retrieval parameters (search_type: semantic|keyword|hybrid, top_k, threshold)."
+          },
+          "response": []
+        },
+        {
+          "name": "List Knowledge Bases",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/knowledge-bases?page=1&page_size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "knowledge-bases"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20",
+                  "description": "Items per page (max 100)"
+                }
+              ]
+            },
+            "description": "Lists all knowledge bases belonging to the user."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Knowledge Base by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/knowledge-bases/:knowledge_base_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "knowledge-bases",
+                ":knowledge_base_id"
+              ],
+              "variable": [
+                {
+                  "key": "knowledge_base_id",
+                  "value": "{{knowledge_base_id}}",
+                  "description": "UUID of the knowledge base"
+                }
+              ]
+            },
+            "description": "Retrieves knowledge base details, document counts, and chunk statistics."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Knowledge Base",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Platform Docs & Runbooks (Hybrid Search)\",\n  \"description\": \"Updated platform knowledge base with hybrid retrieval enabled\",\n  \"chunking_config\": {\n    \"strategy\": \"recursive\",\n    \"chunk_size\": 1000,\n    \"chunk_overlap\": 150\n  },\n  \"retrieval_config\": {\n    \"search_type\": \"hybrid\",\n    \"top_k\": 8,\n    \"score_threshold\": 0.7,\n    \"enable_reranking\": true,\n    \"reranker_model\": \"bge-reranker-large\",\n    \"hybrid_alpha\": 0.6\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/knowledge-bases/:knowledge_base_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "knowledge-bases",
+                ":knowledge_base_id"
+              ],
+              "variable": [
+                {
+                  "key": "knowledge_base_id",
+                  "value": "{{knowledge_base_id}}",
+                  "description": "UUID of the knowledge base to update"
+                }
+              ]
+            },
+            "description": "Updates chunking or retrieval parameters for the knowledge base."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Knowledge Base",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/knowledge-bases/:knowledge_base_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "knowledge-bases",
+                ":knowledge_base_id"
+              ],
+              "variable": [
+                {
+                  "key": "knowledge_base_id",
+                  "value": "{{knowledge_base_id}}",
+                  "description": "UUID of the knowledge base to delete"
+                }
+              ]
+            },
+            "description": "Deletes the knowledge base and its indexed vectors."
+          },
+          "response": []
+        }
+      ],
+      "description": "Knowledge base management, chunking strategy, and retrieval settings."
+    },
+    {
+      "name": "06. Documents",
+      "item": [
+        {
+          "name": "Upload Document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.id) {",
+                  "        pm.collectionVariables.set('document_id', jsonData.id);",
+                  "        console.log('Saved document_id:', jsonData.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "description": "Select a file to upload (PDF, TXT, DOCX, MD, HTML)"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents/knowledge-bases/:knowledge_base_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents",
+                "knowledge-bases",
+                ":knowledge_base_id"
+              ],
+              "variable": [
+                {
+                  "key": "knowledge_base_id",
+                  "value": "{{knowledge_base_id}}",
+                  "description": "UUID of the knowledge base to upload into"
+                }
+              ]
+            },
+            "description": "Uploads a document file to the specified knowledge base. Processing and vector indexing are performed asynchronously in Celery."
+          },
+          "response": []
+        },
+        {
+          "name": "List Documents in Knowledge Base",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents/knowledge-bases/:knowledge_base_id?page=1&page_size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents",
+                "knowledge-bases",
+                ":knowledge_base_id"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20",
+                  "description": "Items per page (max 100)"
+                }
+              ],
+              "variable": [
+                {
+                  "key": "knowledge_base_id",
+                  "value": "{{knowledge_base_id}}",
+                  "description": "UUID of the knowledge base"
+                }
+              ]
+            },
+            "description": "Lists all documents uploaded to a specific knowledge base along with status (pending, processing, completed, failed) and chunk counts."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Document by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents/:document_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents",
+                ":document_id"
+              ],
+              "variable": [
+                {
+                  "key": "document_id",
+                  "value": "{{document_id}}",
+                  "description": "UUID of the document"
+                }
+              ]
+            },
+            "description": "Retrieves metadata, processing status, and error logs for a specific document."
+          },
+          "response": []
+        },
+        {
+          "name": "Retry Document Processing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents/:document_id/retry",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents",
+                ":document_id",
+                "retry"
+              ],
+              "variable": [
+                {
+                  "key": "document_id",
+                  "value": "{{document_id}}",
+                  "description": "UUID of the failed document to retry"
+                }
+              ]
+            },
+            "description": "Triggers a retry of the background extraction, chunking, and embedding task for a document."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Document",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/documents/:document_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "documents",
+                ":document_id"
+              ],
+              "variable": [
+                {
+                  "key": "document_id",
+                  "value": "{{document_id}}",
+                  "description": "UUID of the document to delete"
+                }
+              ]
+            },
+            "description": "Deletes the document and removes its corresponding chunks from Qdrant vector storage."
+          },
+          "response": []
+        }
+      ],
+      "description": "Document ingestion, status checking, retry, and deletion."
+    },
+    {
+      "name": "07. Guardrails",
+      "item": [
+        {
+          "name": "Create Guardrail Definition",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.id) {",
+                  "        pm.collectionVariables.set('guardrail_id', jsonData.id);",
+                  "        console.log('Saved guardrail_id:', jsonData.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"content_safety_filter\",\n  \"name\": \"Content Safety and Blocked Terms Filter\",\n  \"description\": \"Detects and blocks restricted keywords, sensitive phrases, and disallowed content\",\n  \"guardrail_type\": \"input\",\n  \"handler\": \"blocked_terms\",\n  \"default_config\": {\n    \"terms\": [\n      \"confidential\",\n      \"internal only\",\n      \"password\",\n      \"secret\"\n    ],\n    \"case_sensitive\": false,\n    \"whole_word\": true,\n    \"replacement\": \"[REDACTED]\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/guardrails",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrails"
+              ]
+            },
+            "description": "Registers a new system guardrail. Handler must be one of: 'blocked_terms', 'pii_detection', 'prompt_injection', 'secret_detection'."
+          },
+          "response": []
+        },
+        {
+          "name": "List Guardrail Definitions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/guardrails?active_only=true&page=1&page_size=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrails"
+              ],
+              "query": [
+                {
+                  "key": "active_only",
+                  "value": "true",
+                  "description": "Filter active guardrails"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number"
+                },
+                {
+                  "key": "page_size",
+                  "value": "50",
+                  "description": "Items per page (max 100)"
+                }
+              ]
+            },
+            "description": "Lists all registered guardrail definitions."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Guardrail by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/guardrails/:guardrail_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrails",
+                ":guardrail_id"
+              ],
+              "variable": [
+                {
+                  "key": "guardrail_id",
+                  "value": "{{guardrail_id}}",
+                  "description": "UUID of the guardrail definition"
+                }
+              ]
+            },
+            "description": "Retrieves a guardrail definition by ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Guardrail Definition",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Content Safety Filter (Updated)\",\n  \"description\": \"Expanded list of restricted terms for production compliance\",\n  \"default_config\": {\n    \"terms\": [\n      \"confidential\",\n      \"internal only\",\n      \"password\",\n      \"secret\",\n      \"private key\"\n    ],\n    \"case_sensitive\": false,\n    \"whole_word\": true,\n    \"replacement\": \"[BLOCKED]\"\n  },\n  \"is_active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/guardrails/:guardrail_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrails",
+                ":guardrail_id"
+              ],
+              "variable": [
+                {
+                  "key": "guardrail_id",
+                  "value": "{{guardrail_id}}",
+                  "description": "UUID of the guardrail to update"
+                }
+              ]
+            },
+            "description": "Updates guardrail name, handler default configs, or active status."
+          },
+          "response": []
+        },
+        {
+          "name": "Attach Guardrail to Bot",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.id) {",
+                  "        pm.collectionVariables.set('bot_guardrail_id', jsonData.id);",
+                  "        console.log('Saved bot_guardrail_id:', jsonData.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"guardrail_id\": \"{{guardrail_id}}\",\n  \"action\": \"block\",\n  \"priority\": 100,\n  \"is_enabled\": true,\n  \"config\": {\n    \"terms\": [\n      \"confidential\",\n      \"password\",\n      \"api_key\",\n      \"internal secret\"\n    ],\n    \"replacement\": \"[BLOCKED]\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/guardrails/bots/:bot_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrails",
+                "bots",
+                ":bot_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                }
+              ]
+            },
+            "description": "Attaches a guardrail to a specific bot with action: 'block', 'redact', 'warn', or 'log'."
+          },
+          "response": []
+        },
+        {
+          "name": "List Guardrails for Bot",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/guardrails/bots/:bot_id/configs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrails",
+                "bots",
+                ":bot_id",
+                "configs"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                }
+              ]
+            },
+            "description": "Lists all guardrails active and attached to the target bot."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Bot Guardrail Configuration",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"redact\",\n  \"priority\": 50,\n  \"is_enabled\": true,\n  \"config\": {\n    \"terms\": [\n      \"confidential\",\n      \"password\",\n      \"api_key\",\n      \"internal secret\"\n    ],\n    \"replacement\": \"[REDACTED]\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/guardrails/bots/:bot_id/:bot_guardrail_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrails",
+                "bots",
+                ":bot_id",
+                ":bot_guardrail_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                },
+                {
+                  "key": "bot_guardrail_id",
+                  "value": "{{bot_guardrail_id}}",
+                  "description": "UUID of the bot-guardrail association"
+                }
+              ]
+            },
+            "description": "Modifies priority, action, or custom config for an attached bot guardrail."
+          },
+          "response": []
+        },
+        {
+          "name": "Test Bot Guardrails",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stage\": \"input\",\n  \"text\": \"Please provide the confidential admin password and internal secret credentials.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/guardrails/bots/:bot_id/test",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrails",
+                "bots",
+                ":bot_id",
+                "test"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                }
+              ]
+            },
+            "description": "Simulates guardrail evaluation on sample text at stage: 'input', 'retrieval', 'tool', or 'output'."
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Guardrail from Bot",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/guardrails/bots/:bot_id/:bot_guardrail_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "guardrails",
+                "bots",
+                ":bot_id",
+                ":bot_guardrail_id"
+              ],
+              "variable": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "UUID of the bot"
+                },
+                {
+                  "key": "bot_guardrail_id",
+                  "value": "{{bot_guardrail_id}}",
+                  "description": "UUID of the bot-guardrail association"
+                }
+              ]
+            },
+            "description": "Detaches and removes a guardrail configuration from a bot."
+          },
+          "response": []
+        }
+      ],
+      "description": "Safety filter definitions, bot attachment, and testing."
+    },
+    {
+      "name": "08. Conversations",
+      "item": [
+        {
+          "name": "Create Conversation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.id) {",
+                  "        pm.collectionVariables.set('conversation_id', jsonData.id);",
+                  "        console.log('Saved conversation_id:', jsonData.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bot_id\": \"{{bot_id}}\",\n  \"title\": \"Cloud Infrastructure Setup Discussion\",\n  \"metadata\": {\n    \"channel\": \"web_chat\",\n    \"user_locale\": \"en-US\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "description": "Creates a new conversation session associated with a specific bot."
+          },
+          "response": []
+        },
+        {
+          "name": "List Conversations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations?bot_id={{bot_id}}&page=1&page_size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ],
+              "query": [
+                {
+                  "key": "bot_id",
+                  "value": "{{bot_id}}",
+                  "description": "Optional filter by bot UUID"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "Page number"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20",
+                  "description": "Items per page (max 100)"
+                }
+              ]
+            },
+            "description": "Retrieves conversations for the current user, optionally filtered by bot_id."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Conversation by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations/:conversation_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                ":conversation_id"
+              ],
+              "variable": [
+                {
+                  "key": "conversation_id",
+                  "value": "{{conversation_id}}",
+                  "description": "UUID of the conversation"
+                }
+              ]
+            },
+            "description": "Fetches conversation metadata and summary."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Conversation Messages",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations/:conversation_id/messages?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                ":conversation_id",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Max messages to return (1-200)"
+                }
+              ],
+              "variable": [
+                {
+                  "key": "conversation_id",
+                  "value": "{{conversation_id}}",
+                  "description": "UUID of the conversation"
+                }
+              ]
+            },
+            "description": "Fetches chronologically ordered messages for the conversation with token usage and latency stats."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Conversation",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Cloud Infrastructure Setup (Resolved)\",\n  \"metadata\": {\n    \"status\": \"closed\",\n    \"resolution\": \"RESOLVED_BY_BOT\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations/:conversation_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                ":conversation_id"
+              ],
+              "variable": [
+                {
+                  "key": "conversation_id",
+                  "value": "{{conversation_id}}",
+                  "description": "UUID of the conversation to update"
+                }
+              ]
+            },
+            "description": "Updates conversation title or custom metadata."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Conversation",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/conversations/:conversation_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                ":conversation_id"
+              ],
+              "variable": [
+                {
+                  "key": "conversation_id",
+                  "value": "{{conversation_id}}",
+                  "description": "UUID of the conversation to delete"
+                }
+              ]
+            },
+            "description": "Deletes the conversation and its message history."
+          },
+          "response": []
+        }
+      ],
+      "description": "Conversation lifecycle and message history."
+    },
+    {
+      "name": "09. Chat",
+      "item": [
+        {
+          "name": "Send Chat Message (Existing Thread)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.conversation_id) {",
+                  "        pm.collectionVariables.set('conversation_id', jsonData.conversation_id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bot_id\": \"{{bot_id}}\",\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"message\": \"Can you summarize the architecture and key benefits of containerized microservices?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/chat",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "chat"
+              ]
+            },
+            "description": "Sends a user message in an existing conversation. Executes guardrail checks, semantic knowledge base retrieval, and LLM completion."
+          },
+          "response": []
+        },
+        {
+          "name": "Send Chat Message (New Conversation Auto-Create)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData.conversation_id) {",
+                  "        pm.collectionVariables.set('conversation_id', jsonData.conversation_id);",
+                  "        console.log('Created and saved conversation_id:', jsonData.conversation_id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bot_id\": \"{{bot_id}}\",\n  \"message\": \"Hello! How does vector search find relevant documents when answering user questions?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/chat",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "chat"
+              ]
+            },
+            "description": "Sends a message without conversation_id. Automatically initializes a new conversation session and saves its UUID."
+          },
+          "response": []
+        }
+      ],
+      "description": "End-to-end RAG chat execution and message generation."
+    },
+    {
+      "name": "10. System",
+      "item": [
+        {
+          "name": "Root Status",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": []
+            },
+            "description": "Returns application service name, current version, and running status."
+          },
+          "response": []
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "System health probe used by load balancers and orchestrators."
+          },
+          "response": []
+        }
+      ],
+      "description": "Service root info and health probe."
+    }
+  ]
+}

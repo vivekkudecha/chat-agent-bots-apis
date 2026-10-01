@@ -85,8 +85,12 @@ class OpenAICompatibleProvider(
         api_key: str,
     ):
 
+        base_url_normalized = base_url.rstrip("/")
+        if base_url_normalized.endswith("/api"):
+            base_url_normalized = base_url_normalized[:-4] + "/v1"
+
         self.client = AsyncOpenAI(
-            base_url=base_url,
+            base_url=base_url_normalized,
             api_key=api_key,
             timeout=settings.LLM_TIMEOUT_SECONDS,
             max_retries=0,
@@ -265,7 +269,7 @@ def get_llm_provider() -> LLMProvider:
             .strip()
         )
 
-        if provider == "vllm":
+        if provider in ("vllm", "local", "ollama"):
 
             _llm_provider = (
                 OpenAICompatibleProvider(

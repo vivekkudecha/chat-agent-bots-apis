@@ -8,7 +8,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -138,12 +137,4 @@ class BotGuardrail(Base):
     guardrail = relationship(
         "Guardrail",
         back_populates="bot_links",
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "bot_id",
-            "guardrail_id",
-            name="uq_bot_guardrail",
-        ),
     )

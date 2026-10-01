@@ -7,7 +7,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -129,12 +128,4 @@ class BotKnowledgeBase(Base):
     knowledge_base = relationship(
         "KnowledgeBase",
         back_populates="bot_links",
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "bot_id",
-            "knowledge_base_id",
-            name="uq_bot_knowledge_base",
-        ),
     )

@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -46,7 +47,7 @@ class BotBase(BaseModel):
 
     metadata_: dict[str, Any] = Field(
         default_factory=dict,
-        alias="metadata",
+        validation_alias=AliasChoices("metadata_", "metadata"),
         serialization_alias="metadata",
     )
 
@@ -61,11 +62,12 @@ class BotBase(BaseModel):
 
 class BotCreateRequest(BotBase):
 
-    slug: str = Field(
-        ...,
+    slug: str | None = Field(
+        default=None,
         min_length=2,
         max_length=150,
         pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        description="Optional unique slug. If omitted, it will be automatically system generated.",
     )
 
     system_instruction: str = Field(
@@ -117,7 +119,7 @@ class BotUpdateRequest(BaseModel):
 
     metadata_: dict[str, Any] | None = Field(
         default=None,
-        alias="metadata",
+        validation_alias=AliasChoices("metadata_", "metadata"),
         serialization_alias="metadata",
     )
 
@@ -216,7 +218,8 @@ class BotResponse(BaseModel):
     is_api_enabled: bool
 
     metadata_: dict[str, Any] = Field(
-        alias="metadata",
+        default_factory=dict,
+        validation_alias=AliasChoices("metadata_", "metadata"),
         serialization_alias="metadata",
     )
 
@@ -253,3 +256,40 @@ class BotListResponse(BaseModel):
     page: int = 1
 
     page_size: int = 20
+
+
+# ---------------------------------------------------------
+# Bot Creation With Documents
+# ---------------------------------------------------------
+
+class UploadedDocumentSummary(BaseModel):
+
+    id: uuid.UUID
+    original_name: str
+    file_size: int
+    status: str
+    chunk_count: int = 0
+    error_message: str | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(
+        from_attributes=True,
+    )
+
+
+class BotCreationSummary(BaseModel):
+
+    total_files: int
+    processed_files: int
+    failed_files: int
+    total_chunks: int
+
+
+class BotWithDocumentsResponse(BotDetailResponse):
+
+    knowledge_base_id: uuid.UUID | None = None
+    knowledge_base_name: str | None = None
+    documents: list[UploadedDocumentSummary] = Field(
+        default_factory=list,
+    )
+    summary: BotCreationSummary | None = None

@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.guardrails.base import (
     GuardrailStage,
 )
@@ -303,25 +304,51 @@ class ChatService:
             )
         )
 
-        if not model_config:
-            raise ModelNotFoundException(
-                "Bot has no primary model."
+        model = None
+        if model_config:
+            model = (
+                await AIModelRepository.get_by_id(
+                    db,
+                    model_config.model_id,
+                )
             )
 
-        model = (
-            await AIModelRepository.get_by_id(
+        if not model or not model.is_active:
+            default_model_key = getattr(
+                settings,
+                "VLLM_DEFAULT_MODEL",
+                "llama3.2:latest",
+            )
+            model = await AIModelRepository.get_by_key(
                 db,
-                model_config.model_id,
+                provider=settings.LLM_PROVIDER,
+                model_key=default_model_key,
             )
+            if not model:
+                model = await AIModelRepository.create(
+                    db,
+                    provider=settings.LLM_PROVIDER,
+                    model_key=default_model_key,
+                    display_name=default_model_key,
+                    model_type="chat",
+                )
+                await db.commit()
+
+        temperature = (
+            model_config.temperature
+            if model_config
+            else 0.7
         )
-
-        if not model:
-            raise ModelNotFoundException()
-
-        if not model.is_active:
-            raise ModelNotFoundException(
-                "Configured model is inactive."
-            )
+        top_p = (
+            model_config.top_p
+            if model_config
+            else 1.0
+        )
+        max_tokens = (
+            model_config.max_tokens
+            if model_config
+            else 2048
+        )
 
         # ---------------------------------------------
         # LLM
@@ -332,15 +359,9 @@ class ChatService:
             response = await self.llm.chat(
                 messages=prompt.messages,
                 model=model.model_key,
-                temperature=(
-                    model_config.temperature
-                ),
-                top_p=(
-                    model_config.top_p
-                ),
-                max_tokens=(
-                    model_config.max_tokens
-                ),
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
             )
 
         except Exception as exc:

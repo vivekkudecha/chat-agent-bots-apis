@@ -1,18 +1,28 @@
+import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.exceptions import (
     BotNotFoundException,
     KnowledgeBaseNotFoundException,
+    ValidationException,
 )
 from app.models.bot import Bot, BotVersion
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.bot_repository import BotRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
+from app.services.document_service import DocumentService
+from app.services.text_extraction_service import TextExtractionService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -22,6 +32,32 @@ class BotListResult:
 
 
 class BotService:
+
+    @staticmethod
+    async def _generate_unique_slug(
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        name: str,
+        requested_slug: str | None = None,
+    ) -> str:
+        raw = requested_slug or name
+        base = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")[:100]
+        if not base:
+            base = "bot"
+
+        # If user did not provide a slug, check if base slug is free
+        existing = await BotRepository.get_by_slug(db, user_id=user_id, slug=base)
+        if not existing:
+            return base
+
+        # If base is taken, generate unique collision-free suffix
+        for _ in range(10):
+            candidate = f"{base}-{uuid.uuid4().hex[:6]}"
+            if not await BotRepository.get_by_slug(db, user_id=user_id, slug=candidate):
+                return candidate
+
+        return f"{base}-{uuid.uuid4().hex[:10]}"
 
     # =====================================================
     # CREATE
@@ -43,10 +79,11 @@ class BotService:
         metadata: dict[str, Any] | None = None,
     ) -> Bot:
 
-        bot_slug = (
-            slug
-            or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-            or f"bot-{uuid.uuid4().hex[:8]}"
+        bot_slug = await self._generate_unique_slug(
+            db,
+            user_id=user_id,
+            name=name,
+            requested_slug=slug,
         )
 
         bot = await BotRepository.create(
@@ -445,3 +482,166 @@ class BotService:
         )
 
         await db.commit()
+
+    # =====================================================
+    # CREATE WITH DOCUMENTS
+    # =====================================================
+
+    async def create_with_documents(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        name: str,
+        slug: str | None = None,
+        description: str | None = None,
+        system_instruction: str | None = None,
+        welcome_message: str | None = None,
+        conversation_starters: list[str] | None = None,
+        visibility: str = "private",
+        avatar_url: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        knowledge_base_id: uuid.UUID | None = None,
+        knowledge_base_name: str | None = None,
+        files: list[UploadFile] | None = None,
+    ) -> dict[str, Any]:
+
+        valid_files = [f for f in (files or []) if f.filename]
+        max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
+        # Validate file extensions & sizes upfront
+        for f in valid_files:
+            ext = Path(f.filename or "").suffix.lower()
+            if ext not in TextExtractionService.SUPPORTED_EXTENSIONS:
+                raise ValidationException(
+                    f"Unsupported file format '{f.filename}'. Supported formats: {', '.join(sorted(TextExtractionService.SUPPORTED_EXTENSIONS))}"
+                )
+            if f.size is not None and f.size > max_bytes:
+                raise ValidationException(
+                    f"File '{f.filename}' exceeds the maximum allowed size of {settings.MAX_UPLOAD_SIZE_MB}MB."
+                )
+
+        # 1. Create Bot
+        bot = await self.create(
+            db,
+            user_id=user_id,
+            name=name,
+            slug=slug,
+            description=description,
+            system_instruction=system_instruction,
+            welcome_message=welcome_message,
+            conversation_starters=conversation_starters,
+            visibility=visibility,
+            avatar_url=avatar_url,
+            metadata=metadata,
+        )
+
+        # 2. Resolve or Create Knowledge Base
+        if knowledge_base_id:
+            kb = await KnowledgeRepository.get_owned(
+                db,
+                knowledge_base_id=knowledge_base_id,
+                user_id=user_id,
+            )
+            if not kb:
+                raise KnowledgeBaseNotFoundException(
+                    "Specified knowledge base was not found."
+                )
+        else:
+            kb_title = knowledge_base_name or f"{bot.name} Knowledge Base"
+            kb_desc = f"Auto-created knowledge base for bot {bot.name}"
+            kb = await KnowledgeRepository.create(
+                db,
+                user_id=user_id,
+                name=kb_title,
+                description=kb_desc,
+            )
+            await db.commit()
+            await db.refresh(kb)
+
+        # 3. Attach Knowledge Base to Bot
+        await self.attach_knowledge_base(
+            db,
+            bot_id=bot.id,
+            knowledge_base_id=kb.id,
+            user_id=user_id,
+        )
+
+        # 4. Upload, Chunk, and Embed files synchronously
+        document_service = DocumentService()
+        uploaded_documents = []
+        processed_count = 0
+        failed_count = 0
+        total_chunks = 0
+
+        for file in valid_files:
+            try:
+                # Upload document
+                doc = await document_service.upload(
+                    db,
+                    user_id=user_id,
+                    knowledge_base_id=kb.id,
+                    file=file,
+                )
+                await db.commit()
+                await db.refresh(doc)
+
+                # Process: extract, chunk, embed, and store in vector DB
+                processed_doc = await document_service.process_document(
+                    db,
+                    document_id=doc.id,
+                )
+                uploaded_documents.append(processed_doc)
+
+                if processed_doc.status == "ready":
+                    processed_count += 1
+                    total_chunks += (processed_doc.chunk_count or 0)
+                else:
+                    failed_count += 1
+
+            except Exception as exc:
+                logger.error("Failed processing file %s: %s", file.filename, exc)
+                failed_count += 1
+                uploaded_documents.append(
+                    {
+                        "id": uuid.uuid4(),
+                        "original_name": file.filename or "unknown",
+                        "file_size": file.size or 0,
+                        "status": "failed",
+                        "chunk_count": 0,
+                        "error_message": str(exc),
+                        "created_at": datetime.now(timezone.utc),
+                    }
+                )
+
+        # 5. Fetch updated bot with versions
+        bot_with_versions = await BotRepository.get_with_versions(
+            db,
+            bot_id=bot.id,
+        )
+        final_bot = bot_with_versions or bot
+
+        return {
+            "id": final_bot.id,
+            "user_id": final_bot.user_id,
+            "name": final_bot.name,
+            "slug": final_bot.slug,
+            "description": final_bot.description,
+            "status": final_bot.status,
+            "visibility": final_bot.visibility,
+            "avatar_url": final_bot.avatar_url,
+            "is_api_enabled": final_bot.is_api_enabled,
+            "metadata_": final_bot.metadata_,
+            "created_at": final_bot.created_at,
+            "updated_at": final_bot.updated_at,
+            "versions": getattr(final_bot, "versions", []),
+            "knowledge_base_id": kb.id,
+            "knowledge_base_name": kb.name,
+            "documents": uploaded_documents,
+            "summary": {
+                "total_files": len(valid_files),
+                "processed_files": processed_count,
+                "failed_files": failed_count,
+                "total_chunks": total_chunks,
+            },
+        }

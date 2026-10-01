@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
 
     vector_store = VectorStoreService()
 
-    # await vector_store.initialize()
+    await vector_store.initialize()
 
     logger.info(
         "Qdrant vector store initialized"
@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down application")
 
-    # await close_qdrant()
+    await close_qdrant()
 
     await close_database()
 
@@ -99,10 +99,7 @@ register_exception_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

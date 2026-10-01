@@ -115,12 +115,15 @@ class LocalStorageProvider(StorageProvider):
             exist_ok=True,
         )
 
+        max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
         try:
 
             await asyncio.to_thread(
                 self._write_upload,
                 file.file,
                 destination,
+                max_bytes,
             )
 
         finally:
@@ -132,24 +135,36 @@ class LocalStorageProvider(StorageProvider):
     def _write_upload(
         source,
         destination: Path,
+        max_bytes: int | None = None,
     ) -> None:
 
         source.seek(0)
+        total_written = 0
 
-        with destination.open(
-            "wb"
-        ) as output:
+        try:
+            with destination.open(
+                "wb"
+            ) as output:
 
-            while True:
+                while True:
 
-                chunk = source.read(
-                    1024 * 1024
-                )
+                    chunk = source.read(
+                        1024 * 1024
+                    )
 
-                if not chunk:
-                    break
+                    if not chunk:
+                        break
 
-                output.write(chunk)
+                    total_written += len(chunk)
+                    if max_bytes and total_written > max_bytes:
+                        raise ValueError(
+                            f"File size exceeds maximum allowed limit of {max_bytes // (1024 * 1024)}MB."
+                        )
+
+                    output.write(chunk)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
 
     # -----------------------------------------------------
     # Resolve

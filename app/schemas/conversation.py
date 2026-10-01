@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -36,7 +37,7 @@ class ConversationCreate(BaseModel):
 
     metadata_: dict[str, Any] = Field(
         default_factory=dict,
-        alias="metadata",
+        validation_alias=AliasChoices("metadata_", "metadata"),
         serialization_alias="metadata",
     )
 
@@ -58,7 +59,7 @@ class ConversationUpdate(BaseModel):
 
     metadata_: dict[str, Any] | None = Field(
         default=None,
-        alias="metadata",
+        validation_alias=AliasChoices("metadata_", "metadata"),
         serialization_alias="metadata",
     )
 
@@ -89,7 +90,8 @@ class MessageResponse(BaseModel):
     latency_ms: int | None
 
     metadata_: dict[str, Any] = Field(
-        alias="metadata",
+        default_factory=dict,
+        validation_alias=AliasChoices("metadata_", "metadata"),
         serialization_alias="metadata",
     )
 
@@ -115,7 +117,8 @@ class ConversationResponse(BaseModel):
     title: str | None
 
     metadata_: dict[str, Any] = Field(
-        alias="metadata",
+        default_factory=dict,
+        validation_alias=AliasChoices("metadata_", "metadata"),
         serialization_alias="metadata",
     )
 

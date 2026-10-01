@@ -310,6 +310,32 @@ class BotRepository:
         return result.scalar_one_or_none()
 
     # -----------------------------------------------------
+    # Active Version (latest version)
+    # -----------------------------------------------------
+
+    @staticmethod
+    async def get_active_version(
+        db: AsyncSession,
+        *,
+        bot_id: uuid.UUID,
+    ) -> BotVersion | None:
+        return await BotRepository.get_latest_version(db, bot_id=bot_id)
+
+    # -----------------------------------------------------
+    # Primary Model Config
+    # -----------------------------------------------------
+
+    @staticmethod
+    async def get_primary_model_config(
+        db: AsyncSession,
+        *,
+        bot_id: uuid.UUID,
+    ):
+        from app.repositories.ai_model_repository import AIModelRepository
+
+        return await AIModelRepository.get_primary_model(db, bot_id=bot_id)
+
+    # -----------------------------------------------------
     # List Versions
     # -----------------------------------------------------
 

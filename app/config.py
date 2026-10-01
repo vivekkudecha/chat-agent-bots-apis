@@ -47,8 +47,12 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
     # ---------------------------------------------------------
-    # vLLM
+    # LLM & vLLM
     # ---------------------------------------------------------
+    LLM_PROVIDER: str = "vllm"
+
+    LLM_TIMEOUT_SECONDS: int = 120
+
     VLLM_BASE_URL: str = "http://localhost:8001/v1"
 
     VLLM_API_KEY: str = "local-vllm"
@@ -80,7 +84,16 @@ class Settings(BaseSettings):
 
     LOCAL_STORAGE_PATH: str = "./storage"
 
-    MAX_UPLOAD_SIZE_MB: int = 50
+    MAX_UPLOAD_SIZE_MB: int = 200
+
+    # ---------------------------------------------------------
+    # OCR / PyMuPDF Settings
+    # ---------------------------------------------------------
+    TESSDATA_PREFIX: str = "./data/tessdata"
+
+    OCR_LANGUAGE: str = "eng"
+
+    OCR_DPI: int = 150
 
     # ---------------------------------------------------------
     # Authentication

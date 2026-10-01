@@ -1,14 +1,23 @@
+import json
+from typing import Any
 import uuid
 
 from fastapi import (
     APIRouter,
     Depends,
+    File,
+    Form,
     Query,
+    UploadFile,
     status,
 )
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
+)
+
+from app.core.exceptions import (
+    ValidationException,
 )
 
 from app.database import get_db
@@ -26,6 +35,7 @@ from app.schemas.bot import (
     BotDetailResponse,
     BotListResponse,
     BotVersionResponse,
+    BotWithDocumentsResponse,
 )
 
 from app.services import (
@@ -75,6 +85,79 @@ async def create_bot(
     return BotDetailResponse.model_validate(
         bot
     )
+
+
+# =========================================================
+# CREATE BOT WITH DOCUMENTS (CHUNKING & EMBEDDING)
+# =========================================================
+
+@router.post(
+    "/with-documents",
+    response_model=BotWithDocumentsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_bot_with_documents(
+    name: str = Form(..., description="Bot name"),
+    slug: str | None = Form(default=None, description="Unique slug for the bot"),
+    description: str | None = Form(default=None, description="Bot description"),
+    system_instruction: str | None = Form(default=None, description="System instruction / prompt"),
+    welcome_message: str | None = Form(default=None, description="Greeting message"),
+    conversation_starters: str | None = Form(default=None, description="JSON array or newline/comma-separated conversation starters"),
+    visibility: str = Form(default="private", description="Bot visibility: private, workspace, public"),
+    avatar_url: str | None = Form(default=None, description="Avatar image URL"),
+    metadata: str | None = Form(default=None, description="JSON string object for extra metadata"),
+    knowledge_base_id: uuid.UUID | None = Form(default=None, description="Existing KB ID to attach and upload into"),
+    knowledge_base_name: str | None = Form(default=None, description="Custom name if creating a new dedicated KB"),
+    files: list[UploadFile] = File(default=[], description="Multiple files up to 200MB"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a new bot and simultaneously upload, extract, chunk, embed,
+    and index multiple documents (up to 200MB) in Qdrant vector database.
+    """
+    parsed_starters: list[str] | None = None
+    if conversation_starters:
+        trimmed = conversation_starters.strip()
+        if trimmed.startswith("[") and trimmed.endswith("]"):
+            try:
+                loaded = json.loads(trimmed)
+                if isinstance(loaded, list):
+                    parsed_starters = [str(x) for x in loaded]
+            except Exception:
+                parsed_starters = [s.strip() for s in trimmed.strip("[]").split(",") if s.strip()]
+        else:
+            parsed_starters = [s.strip() for s in trimmed.splitlines() if s.strip()] or [trimmed]
+
+    parsed_metadata: dict[str, Any] | None = None
+    if metadata:
+        try:
+            parsed_metadata = json.loads(metadata)
+            if not isinstance(parsed_metadata, dict):
+                raise ValidationException("Form field 'metadata' must be a valid JSON object.")
+        except json.JSONDecodeError as exc:
+            raise ValidationException(f"Invalid JSON in 'metadata': {exc.msg}") from exc
+
+    service = BotService()
+
+    result = await service.create_with_documents(
+        db,
+        user_id=current_user.id,
+        name=name,
+        slug=slug,
+        description=description,
+        system_instruction=system_instruction,
+        welcome_message=welcome_message,
+        conversation_starters=parsed_starters,
+        visibility=visibility,
+        avatar_url=avatar_url,
+        metadata=parsed_metadata,
+        knowledge_base_id=knowledge_base_id,
+        knowledge_base_name=knowledge_base_name,
+        files=files,
+    )
+
+    return BotWithDocumentsResponse.model_validate(result)
 
 
 # =========================================================
