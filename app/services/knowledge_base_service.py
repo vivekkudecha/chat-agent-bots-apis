@@ -18,7 +18,7 @@ from app.repositories.audit_repository import (
     AuditRepository,
 )
 
-from app.services.vector_store_service import (
+from app.ai.rag import (
     VectorStoreService,
 )
 

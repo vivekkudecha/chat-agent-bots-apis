@@ -28,11 +28,8 @@ from app.services import (
     GuardrailManagementService,
 )
 
-from app.services.guardrail_service import (
+from app.ai.guardrails import (
     GuardrailService,
-)
-
-from app.guardrails.base import (
     GuardrailStage,
 )
 

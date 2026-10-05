@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.guardrails.base import (
+from app.ai.guardrails import (
     GuardrailStage,
 )
 
@@ -18,7 +18,7 @@ from app.core.exceptions import (
     ModelNotFoundException,
 )
 
-from app.integrations.llm import (
+from app.ai.llm import (
     LLMProvider,
     get_llm_provider,
 )

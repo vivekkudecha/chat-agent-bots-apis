@@ -154,7 +154,7 @@ async def _delete_vectors(
     document_id: uuid.UUID,
 ) -> dict:
 
-    from app.services.vector_store_service import (
+    from app.ai.rag import (
         VectorStoreService,
     )
 

@@ -18,15 +18,9 @@ from app.repositories.knowledge_repository import (
     KnowledgeRepository,
 )
 
-from app.services.text_extraction_service import (
-    TextExtractionService,
-)
-
-from app.services.chunking_service import (
+from app.ai.rag import (
     ChunkingService,
-)
-
-from app.services.vector_store_service import (
+    TextExtractionService,
     VectorStoreService,
 )
 

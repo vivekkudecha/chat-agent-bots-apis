@@ -20,7 +20,7 @@ from app.repositories.audit_repository import AuditRepository
 from app.repositories.bot_repository import BotRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.services.document_service import DocumentService
-from app.services.text_extraction_service import TextExtractionService
+from app.ai.rag import TextExtractionService
 
 logger = logging.getLogger(__name__)
 
