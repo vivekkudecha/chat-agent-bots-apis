@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+import httpx
 from openai import AsyncOpenAI
 
 from app.config import settings
@@ -72,15 +73,34 @@ class OpenAICompatibleProvider(LLMProvider):
         *,
         base_url: str,
         api_key: str,
+        verify_ssl: bool | None = None,
+        trust_env: bool | None = None,
+        timeout: float | None = None,
     ):
         base_url_normalized = base_url.rstrip("/")
         if base_url_normalized.endswith("/api"):
             base_url_normalized = base_url_normalized[:-4] + "/v1"
 
+        self.verify_ssl = (
+            settings.LLM_VERIFY_SSL if verify_ssl is None else verify_ssl
+        )
+        self.trust_env = (
+            settings.LLM_TRUST_ENV if trust_env is None else trust_env
+        )
+        self.timeout = (
+            settings.LLM_TIMEOUT_SECONDS if timeout is None else timeout
+        )
+
+        http_client = httpx.AsyncClient(
+            verify=self.verify_ssl,
+            trust_env=self.trust_env,
+            timeout=self.timeout,
+        )
+
         self.client = AsyncOpenAI(
             base_url=base_url_normalized,
             api_key=api_key,
-            timeout=settings.LLM_TIMEOUT_SECONDS,
+            http_client=http_client,
             max_retries=0,
         )
 
@@ -214,6 +234,9 @@ def get_llm_provider() -> LLMProvider:
             _llm_provider = OpenAICompatibleProvider(
                 base_url=settings.VLLM_BASE_URL,
                 api_key=settings.VLLM_API_KEY,
+                verify_ssl=settings.LLM_VERIFY_SSL,
+                trust_env=settings.LLM_TRUST_ENV,
+                timeout=settings.LLM_TIMEOUT_SECONDS,
             )
         else:
             raise RuntimeError(f"Unsupported LLM provider: {provider}")
