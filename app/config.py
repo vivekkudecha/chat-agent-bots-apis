@@ -97,9 +97,18 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------
     TESSDATA_PREFIX: str = "./data/tessdata"
 
-    OCR_LANGUAGE: str = "eng"
+    OCR_LANGUAGE: str = "eng+hin+spa+fra+deu+guj+chi_sim+ara"
 
     OCR_DPI: int = 150
+
+    # ---------------------------------------------------------
+    # Language & Internationalization
+    # ---------------------------------------------------------
+    DEFAULT_LANGUAGE: str = "auto"
+
+    QDRANT_TEXT_TOKENIZER: str = "multilingual"
+
+    RAG_STOP_WORDS: str | None = None
 
     # ---------------------------------------------------------
     # Authentication

@@ -328,22 +328,30 @@ class RetrievalService:
         if len(cleaned) <= max_chars:
             return cleaned
 
-        query_words = {
-            w.lower()
-            for w in re.findall(r"\w+", query)
-            if len(w) > 2 and w.lower() not in {
-                "the", "and", "for", "with", "this", "that", "what", "from",
-                "have", "about", "your", "tell", "which",
-            }
-        }
-        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+        # Multilingual sentence splitting: supports ., !, ?, Hindi ।, Chinese/Japanese 。, Arabic ؟, newlines
+        sentences = [
+            s.strip()
+            for s in re.split(r"(?<=[.!?।。\n\r؟])\s*", cleaned)
+            if s.strip()
+        ]
         if len(sentences) <= 1:
             return cleaned[:max_chars].strip() + "..."
 
+        # Language-agnostic Unicode token extraction
+        query_words = {
+            w.lower()
+            for w in re.findall(r"\w+", query, re.UNICODE)
+            if len(w) >= 2 or any(ord(c) > 127 for c in w)
+        }
+
         scored = []
         for idx, sentence in enumerate(sentences):
-            sent_words = {w.lower() for w in re.findall(r"\w+", sentence)}
+            sent_words = {w.lower() for w in re.findall(r"\w+", sentence, re.UNICODE)}
             overlap = len(query_words.intersection(sent_words)) if query_words else 1
+            # Substring matching for unsegmented or continuous scripts
+            for qw in query_words:
+                if qw in sentence.lower():
+                    overlap += 1
             scored.append((overlap, idx, sentence))
 
         best = max(scored, key=lambda s: (s[0], -s[1]))

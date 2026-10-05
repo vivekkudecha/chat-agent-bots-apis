@@ -1,3 +1,4 @@
+import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -266,41 +267,32 @@ class ChatService:
         await db.commit()
 
         # ---------------------------------------------
-        # Async Parallel Resolution of Prerequisites:
-        # Chat Memory, Model Config, Tools, and Knowledge Bases
+        # Chat Memory Context & Prerequisites Resolution
+        # (Executed sequentially on active SQLAlchemy session)
         # ---------------------------------------------
 
-        memory_task = self.memory.build_context(
+        memory_context = await self.memory.build_context(
             db,
             conversation=conversation,
             current_message_id=user_db_message.id,
         )
-        model_config_task = BotRepository.get_primary_model_config(
+
+        history = memory_context.working_history
+
+        model_config = await BotRepository.get_primary_model_config(
             db,
             bot_id=bot.id,
         )
-        tools_task = self.tools.get_active_bot_tools(
+
+        active_tools = await self.tools.get_active_bot_tools(
             db,
             bot_id=bot.id,
         )
-        kb_task = KnowledgeRepository.list_for_bot(
+
+        kb_links = await KnowledgeRepository.list_for_bot(
             db,
             bot.id,
         )
-
-        (
-            memory_context,
-            model_config,
-            active_tools,
-            kb_links,
-        ) = await asyncio.gather(
-            memory_task,
-            model_config_task,
-            tools_task,
-            kb_task,
-        )
-
-        history = memory_context.working_history
         has_kb = bool(kb_links)
 
         # ---------------------------------------------

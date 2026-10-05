@@ -102,12 +102,23 @@ async def ensure_collection(
                 field_schema=PayloadSchemaType.KEYWORD,
             )
 
+        # Dynamically resolve tokenizer type (default: MULTILINGUAL)
+        tok_setting = getattr(settings, "QDRANT_TEXT_TOKENIZER", "multilingual").lower().strip()
+        if tok_setting == "multilingual":
+            tok_type = TokenizerType.MULTILINGUAL
+        elif tok_setting == "whitespace":
+            tok_type = TokenizerType.WHITESPACE
+        elif tok_setting == "prefix":
+            tok_type = TokenizerType.PREFIX
+        else:
+            tok_type = TokenizerType.WORD
+
         await qdrant_client.create_payload_index(
             collection_name=collection_name,
             field_name="text",
             field_schema=TextIndexParams(
                 type="text",
-                tokenizer=TokenizerType.WORD,
+                tokenizer=tok_type,
                 lowercase=True,
             ),
         )

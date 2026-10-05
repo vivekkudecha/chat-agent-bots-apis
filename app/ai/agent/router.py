@@ -17,18 +17,35 @@ class AgentRouter:
     - RouteType.TOOL: Invokes tool calling when an action tool is requested.
     """
 
-    # Fast path for obvious conversational pleasantries (0ms latency, 0 token waste)
+    # Fast path for obvious conversational pleasantries across languages (0ms latency, 0 token waste)
     CONVERSATIONAL_FAST_PATH = re.compile(
-        r"^(hi|hello|hey|heya|hiya|howdy|good\s+(morning|afternoon|evening|day|night)|"
+        r"^(?:"
+        # English
+        r"hi|hello|hey|heya|hiya|howdy|good\s+(morning|afternoon|evening|day|night)|"
         r"thanks|thank\s+you|thx|appreciate\s+it|many\s+thanks|"
         r"ok|okay|k|got\s+it|understood|cool|great|awesome|perfect|sure|yes|no|yep|nope|alright|fine|"
         r"bye|goodbye|cya|see\s+ya|see\s+you|take\s+care|who\s+are\s+you|how\s+are\s+you|"
-        r"what\s+is\s+your\s+name|what\s+can\s+you\s+do)[\s!.,?]*$",
-        re.IGNORECASE,
+        r"what\s+is\s+your\s+name|what\s+can\s+you\s+do|"
+        # Hindi / Devanagari
+        r"नमस्ते|नमस्कार|धन्यवाद|अलविदा|शुक्रिया|हाँ|नहीं|ठीक\s+है|आप\s+कैसे\s+हैं|"
+        # Gujarati
+        r"નમસ્તે|નમસ્કાર|આભાર|આવજો|હા|ના|કેમ\s+છો|"
+        # Spanish
+        r"hola|gracias|adiós|buenos\s+días|buenas\s+tardes|buenas\s+noches|sí|no|de\s+nada|"
+        # French
+        r"bonjour|merci|au\s+revoir|salut|oui|non|bonne\s+journée|"
+        # German
+        r"hallo|danke|guten\s+tag|tschuess|tschüss|ja|nein|"
+        # Chinese
+        r"你好|谢谢|再见|好的|是|不是|您好|"
+        # Arabic
+        r"مرحبا|شكرا|مع\s+السلامة|نعم|لا|أهلا"
+        r")[\s!.,?।。\n\r؟]*$",
+        re.IGNORECASE | re.UNICODE,
     )
 
-    ROUTER_SYSTEM_PROMPT = """You are an intent routing supervisor for an AI agent.
-Analyze the user's latest message and classify what is needed:
+    ROUTER_SYSTEM_PROMPT = """You are an intent routing supervisor for a multilingual AI agent.
+Analyze the user's latest message in ANY language (English, Hindi, Spanish, French, German, Gujarati, Chinese, Arabic, Japanese, etc.) and classify what is needed:
 
 Available choices:
 - "DIRECT": Greetings, pleasantries, small talk, general conversation, or meta-questions not requiring external documents or tools.

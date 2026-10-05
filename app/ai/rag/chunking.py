@@ -24,7 +24,15 @@ class ChunkingService:
     DEFAULT_SEPARATORS = [
         "\n\n",
         "\n",
-        ". ",
+        "। ",   # Devanagari / Hindi / Bengali full stop
+        "。 ",   # CJK (Chinese, Japanese) full stop with space
+        "。",    # CJK full stop without space
+        "؟ ",   # Arabic / Persian / Urdu question mark
+        "۔ ",   # Arabic / Urdu full stop
+        ". ",   # Latin / Western period
+        "! ",
+        "? ",
+        "; ",
         " ",
         "",
     ]
