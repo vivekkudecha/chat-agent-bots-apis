@@ -48,6 +48,9 @@ class ChatAgentState(TypedDict, total=False):
     route: str  # "direct", "rag", "tool"
     route_reason: str
 
+    # Memory Context (Working memory buffer, episodic summary, temporal awareness)
+    memory_context: Any | None
+
     # Retrieval results
     retrieval: Any | None
     distinct_sources: list[dict[str, Any]]
@@ -220,6 +223,7 @@ class ChatAgentGraph:
             user_message=state["query"],
             history=state.get("history", []),
             retrieval=retrieval,
+            memory_context=state.get("memory_context"),
         )
 
         llm_tools = None

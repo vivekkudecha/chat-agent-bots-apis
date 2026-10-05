@@ -12,6 +12,7 @@ celery_app = Celery(
 
     include=[
         "app.workers.document_tasks",
+        "app.workers.memory_tasks",
     ],
 )
 

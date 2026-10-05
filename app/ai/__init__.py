@@ -40,6 +40,15 @@ from app.ai.rag import (
     VectorStoreService,
 )
 
+from app.ai.memory import (
+    ConversationSummarizer,
+    ConversationSummary,
+    MemoryContext,
+    MemoryManager,
+    TemporalContext,
+    TemporalEngine,
+)
+
 __all__ = [
     # Agent
     "ChatAgentGraph",
@@ -47,6 +56,13 @@ __all__ = [
     "AgentRouter",
     "RouteType",
     "ToolRegistry",
+    # Memory
+    "MemoryManager",
+    "MemoryContext",
+    "ConversationSummary",
+    "TemporalContext",
+    "ConversationSummarizer",
+    "TemporalEngine",
     # RAG
     "RetrievalService",
     "RetrievalResult",

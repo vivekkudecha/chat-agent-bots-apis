@@ -59,6 +59,9 @@ from app.ai.rag import (
 from app.ai.llm import (
     PromptBuilderService,
 )
+from app.ai.memory import (
+    MemoryManager,
+)
 
 
 @dataclass
@@ -130,6 +133,12 @@ class ChatService:
 
         self.tools = (
             ToolRegistry()
+        )
+
+        self.memory = (
+            MemoryManager(
+                llm=self.llm,
+            )
         )
 
         self.graph = (
@@ -257,32 +266,16 @@ class ChatService:
         await db.commit()
 
         # ---------------------------------------------
-        # Conversation history
-        #
-        # Important:
-        # exclude the newly-created current user
-        # message because PromptBuilder adds it
-        # separately.
+        # Chat Memory Context (Working memory, episodic summary, temporal)
         # ---------------------------------------------
 
-        history = (
-            await ConversationRepository
-            .get_recent_messages(
-                db,
-                conversation_id=(
-                    conversation.id
-                ),
-                limit=21,
-            )
+        memory_context = await self.memory.build_context(
+            db,
+            conversation=conversation,
+            current_message_id=user_db_message.id,
         )
 
-        history = [
-            item
-            for item in history
-            if item.id != user_db_message.id
-        ]
-
-        history = history[-20:]
+        history = memory_context.working_history
 
         # ---------------------------------------------
         # Model configuration
@@ -374,6 +367,7 @@ class ChatService:
                     "query": safe_user_message,
                     "bot_version": bot_version,
                     "history": history,
+                    "memory_context": memory_context,
                     "has_kb": has_kb,
                     "available_tools": active_tools,
                     "model_key": model.model_key,
@@ -556,6 +550,19 @@ class ChatService:
         )
 
         await db.commit()
+
+        # ---------------------------------------------
+        # Background Memory Compaction (Async)
+        # ---------------------------------------------
+
+        total_msgs = memory_context.total_conversation_messages + 2
+        if self.memory.should_compact(conversation, total_msgs):
+            try:
+                from app.workers.memory_tasks import compact_conversation_task
+                compact_conversation_task.delay(str(conversation.id), model=model.model_key)
+            except Exception:
+                # If Celery worker/broker is unreachable, fail silently
+                pass
 
         # ---------------------------------------------
         # Sources (Distinct by Document / Reference File)

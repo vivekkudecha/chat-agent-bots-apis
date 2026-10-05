@@ -8,6 +8,7 @@ from app.models.conversation import Message
 
 if TYPE_CHECKING:
     from app.ai.rag.retrieval import RetrievalResult
+    from app.ai.memory.schemas import MemoryContext
 
 
 @dataclass
@@ -64,8 +65,9 @@ Security rules:
         *,
         bot_version: BotVersion,
         user_message: str,
-        history: list[Message],
+        history: list[Message] | None = None,
         retrieval: Any | None = None,
+        memory_context: Any | None = None,
     ) -> BuiltPrompt:
 
         messages: list[dict[str, Any]] = []
@@ -127,10 +129,50 @@ Security rules:
             )
 
         # ---------------------------------------------
-        # CONVERSATION HISTORY
+        # TEMPORAL CONTEXT
         # ---------------------------------------------
 
-        for message in history:
+        if memory_context and getattr(memory_context, "temporal", None):
+            cue = getattr(memory_context.temporal, "prompt_cue", None)
+            if cue:
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": cue,
+                    }
+                )
+
+        # ---------------------------------------------
+        # EPISODIC MEMORY (CONVERSATION SUMMARY)
+        # ---------------------------------------------
+
+        if memory_context and getattr(memory_context, "summary", None):
+            summary_obj = memory_context.summary
+            if hasattr(summary_obj, "to_prompt_text"):
+                summary_text = summary_obj.to_prompt_text()
+                if summary_text:
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "PREVIOUS CONVERSATION EPISODIC MEMORY\n\n"
+                                "The following structured summary represents key topics, "
+                                "decisions, facts, and pending items established with this "
+                                "user earlier in the conversation:\n\n"
+                                f"{summary_text}"
+                            ),
+                        }
+                    )
+
+        # ---------------------------------------------
+        # CONVERSATION HISTORY (WORKING BUFFER)
+        # ---------------------------------------------
+
+        effective_history = history
+        if memory_context and getattr(memory_context, "working_history", None):
+            effective_history = memory_context.working_history
+
+        for message in (effective_history or []):
             if message.role not in {"user", "assistant"}:
                 continue
 
