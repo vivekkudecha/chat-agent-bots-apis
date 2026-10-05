@@ -1,15 +1,15 @@
-# Backward compatibility re-export from new app.ai layer
-from app.ai.guardrails import (
+from app.ai.guardrails.base import (
     BaseGuardrail,
     GuardrailAction,
     GuardrailContext,
+    GuardrailResult,
+    GuardrailStage,
+)
+from app.ai.guardrails.registry import GuardrailRegistry, guardrail_registry
+from app.ai.guardrails.service import (
     GuardrailEvaluation,
     GuardrailExecution,
-    GuardrailRegistry,
-    GuardrailResult,
     GuardrailService,
-    GuardrailStage,
-    guardrail_registry,
 )
 
 __all__ = [

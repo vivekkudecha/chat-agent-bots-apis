@@ -1,7 +1,12 @@
-from app.agent.state import AgentState, RouteType
-from app.agent.router import AgentRouter
-from app.agent.tools import ToolRegistry
-from app.agent.graph import ChatAgentGraph, ChatAgentState
+# Backward compatibility re-exports from new app.ai layer
+from app.ai.agent import (
+    AgentRouter,
+    AgentState,
+    ChatAgentGraph,
+    ChatAgentState,
+    RouteType,
+    ToolRegistry,
+)
 
 __all__ = [
     "AgentState",

@@ -159,7 +159,7 @@ chat-agent-bots-apis/
 │   │   ├── script.py.mako        # Migration template
 │   │   └── versions/             # Versioned schema migration files
 │   │
-│   ├── api/                      # REST API Routers
+│   ├── api/                      # REST API Layer (API endpoints & routes only)
 │   │   └── v1/                   # API Version 1 endpoints
 │   │       ├── auth.py           # User registration, login, token refresh
 │   │       ├── users.py          # User profile management & password update
@@ -169,8 +169,29 @@ chat-agent-bots-apis/
 │   │       ├── documents.py      # Document upload, listing, status & retry
 │   │       ├── guardrails.py     # Guardrail definitions, bot attachment & testing
 │   │       ├── conversations.py  # Conversation sessions & message history
-│   │       ├── chat.py           # Chat completion & bot response generation (RAG)
+│   │       ├── chat.py           # Chat completion & response generation
 │   │       └── router.py         # Consolidated API v1 router
+│   │
+│   ├── ai/                       # AI Layer (LangGraph, RAG, LLM, Guardrails)
+│   │   ├── agent/                # LangGraph StateGraph, router, state & tools
+│   │   │   ├── graph.py          # Compiled StateGraph chat workflow
+│   │   │   ├── router.py         # Adaptive intent router (Direct vs RAG vs Tool)
+│   │   │   ├── state.py          # Agent state definitions & RouteType
+│   │   │   └── tools.py          # Bot tool registry & schema serializer
+│   │   ├── rag/                  # RAG Subsystem
+│   │   │   ├── retrieval.py      # Semantic vector retrieval & distinct source grouping
+│   │   │   ├── vector_store.py   # Qdrant vector store management
+│   │   │   ├── chunking.py       # Document chunking service
+│   │   │   └── text_extraction.py# Text extraction & OCR (PyMuPDF / Tesseract)
+│   │   ├── llm/                  # LLM Subsystem
+│   │   │   ├── provider.py       # LLM provider interface & OpenAI-compatible client
+│   │   │   ├── embeddings.py     # Embedding providers (Ollama / SentenceTransformers)
+│   │   │   └── prompt_builder.py # Context prompt builder & security policy formatter
+│   │   └── guardrails/           # Multi-Stage Guardrails Engine
+│   │       ├── base.py           # Base guardrail interfaces & stages (Input/Output/Retrieval)
+│   │       ├── registry.py       # Guardrail registry & runner
+│   │       ├── service.py        # Guardrail execution service
+│   │       └── implementations/  # PII, secrets, toxicity, prompt injection guardrails
 │   │
 │   ├── core/                     # Application core utilities
 │   │   ├── dependencies.py       # FastAPI dependency injection (auth, db session)
@@ -181,45 +202,21 @@ chat-agent-bots-apis/
 │   ├── database.py               # Async SQLAlchemy engine & session factory
 │   ├── config.py                 # Pydantic BaseSettings application configuration
 │   │
-│   ├── guardrails/               # Guardrail execution engine & policies
-│   │   ├── base.py               # Base guardrail interfaces & execution context
-│   │   ├── registry.py           # Guardrail registry & runner
-│   │   └── implementations/      # Regex, PII, toxicity, prompt injection guardrails
-│   │
-│   ├── integrations/             # External service clients & adapters
-│   │   ├── llm.py                # LLM client (OpenAI-compatible, vLLM, Ollama)
-│   │   ├── embeddings.py         # Embedding providers (SentenceTransformers, Ollama)
+│   ├── integrations/             # External service clients & infrastructure adapters
 │   │   ├── qdrant.py             # Qdrant client connection & lifecycle management
 │   │   └── storage.py            # Local & S3 file storage providers
 │   │
 │   ├── models/                   # SQLAlchemy declarative ORM models
-│   │   ├── users.py              # User account & credential models
-│   │   ├── bot.py                # Bot, BotVersion, BotKnowledgeBase models
-│   │   ├── ai_model.py           # AIModel & BotModelConfig models
-│   │   ├── knowledge_base.py     # KnowledgeBase model
-│   │   ├── document.py           # Document & DocumentChunk metadata models
-│   │   ├── guardrail.py          # Guardrail & BotGuardrail models
-│   │   ├── conversation.py       # Conversation & Message models
-│   │   ├── usage.py              # Token usage & request analytics models
-│   │   ├── audit.py              # Audit logging models
-│   │   └── tool.py               # Bot tool integration models
-│   │
 │   ├── repositories/             # Data access repository layer
 │   ├── schemas/                  # Pydantic request/response validation schemas
 │   │
-│   ├── services/                 # Business logic & orchestration services
+│   ├── services/                 # Application Business Logic Services
 │   │   ├── auth_service.py       # Authentication & credential verification
 │   │   ├── bot_service.py        # Bot lifecycle, versioning & orchestration
-│   │   ├── chat_service.py       # RAG pipeline, LLM prompt assembly & execution
-│   │   ├── chunking_service.py   # Semantic / recursive character chunking
+│   │   ├── chat_service.py       # Chat orchestration (invokes AI LangGraph workflow)
 │   │   ├── document_service.py   # Document upload & ingestion pipeline triggering
-│   │   ├── guardrail_service.py  # Guardrail evaluation on user input & bot output
 │   │   ├── knowledge_base_service.py # Knowledge base collection logic
-│   │   ├── prompt_builder_service.py # Prompt template & context formatter
-│   │   ├── retrieval_service.py  # Semantic vector search & context retrieval
-│   │   ├── text_extraction_service.py # PDF/DOCX/TXT/OCR extraction (PyMuPDF)
-│   │   ├── user_service.py       # User profile operations
-│   │   └── vector_store_service.py # Qdrant collection indexing & chunk upsert
+│   │   └── user_service.py       # User profile operations
 │   │
 │   ├── workers/                  # Celery background workers & asynchronous tasks
 │   │   ├── celery_app.py         # Celery instance configuration & Redis broker

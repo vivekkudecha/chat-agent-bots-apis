@@ -12,7 +12,7 @@ from app.integrations.qdrant import (
     close_qdrant,
 )
 
-from app.services.vector_store_service import (
+from app.ai.rag import (
     VectorStoreService,
 )
 

@@ -42,22 +42,21 @@ from app.repositories.knowledge_repository import (
     KnowledgeRepository,
 )
 
-from app.agent import (
+from app.ai.agent import (
     AgentRouter,
     ChatAgentGraph,
     ChatAgentState,
     RouteType,
     ToolRegistry,
 )
-
-from app.services.guardrail_service import (
+from app.ai.guardrails import (
     GuardrailService,
 )
-from app.services.retrieval_service import (
+from app.ai.rag import (
     RetrievalResult,
     RetrievalService,
 )
-from app.services.prompt_builder_service import (
+from app.ai.llm import (
     PromptBuilderService,
 )
 
