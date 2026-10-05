@@ -147,24 +147,24 @@ class OpenAICompatibleProvider(
 
             usage = LLMUsage()
 
-            if response.usage:
+            raw_usage = getattr(response, "usage", None)
+            if raw_usage:
+                if isinstance(raw_usage, dict):
+                    prompt_tokens = int(raw_usage.get("prompt_tokens") or 0)
+                    completion_tokens = int(raw_usage.get("completion_tokens") or 0)
+                    total_tokens = int(raw_usage.get("total_tokens") or 0)
+                else:
+                    prompt_tokens = int(getattr(raw_usage, "prompt_tokens", 0) or 0)
+                    completion_tokens = int(getattr(raw_usage, "completion_tokens", 0) or 0)
+                    total_tokens = int(getattr(raw_usage, "total_tokens", 0) or 0)
+
+                if total_tokens == 0 and (prompt_tokens + completion_tokens) > 0:
+                    total_tokens = prompt_tokens + completion_tokens
 
                 usage = LLMUsage(
-                    input_tokens=(
-                        response.usage
-                        .prompt_tokens
-                        or 0
-                    ),
-                    output_tokens=(
-                        response.usage
-                        .completion_tokens
-                        or 0
-                    ),
-                    total_tokens=(
-                        response.usage
-                        .total_tokens
-                        or 0
-                    ),
+                    input_tokens=prompt_tokens,
+                    output_tokens=completion_tokens,
+                    total_tokens=total_tokens,
                 )
 
             return LLMResponse(

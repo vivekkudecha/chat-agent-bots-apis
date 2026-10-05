@@ -121,6 +121,10 @@ class VectorStoreService:
 
                 "page": chunk.get("page"),
 
+                "file_name": chunk.get("metadata", {}).get(
+                    "file_name"
+                ),
+
                 "metadata": chunk.get(
                     "metadata",
                     {},
@@ -238,6 +242,16 @@ class VectorStoreService:
 
                         "page": payload.get(
                             "page"
+                        ),
+
+                        "file_name": (
+                            payload.get("file_name")
+                            or (
+                                payload.get(
+                                    "metadata",
+                                    {},
+                                ).get("file_name")
+                            )
                         ),
 
                         "metadata": (

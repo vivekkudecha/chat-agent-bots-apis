@@ -34,6 +34,19 @@ class RetrievedChunk:
 
 
 @dataclass
+class DistinctSource:
+    document_id: uuid.UUID
+    knowledge_base_id: uuid.UUID
+    file_name: str | None
+    page: int | None
+    pages: list[int] = field(default_factory=list)
+    score: float = 0.0
+    chunk_count: int = 1
+    content_preview: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class RetrievalResult:
     query: str
 
@@ -42,6 +55,51 @@ class RetrievalResult:
     knowledge_base_ids: list[uuid.UUID]
 
     total_results: int = 0
+
+    def get_distinct_sources(self) -> list[DistinctSource]:
+        sources_map: dict[uuid.UUID, DistinctSource] = {}
+
+        for chunk in self.chunks:
+            doc_id = chunk.document_id
+            if doc_id not in sources_map:
+                pages = [chunk.page] if chunk.page is not None else []
+                preview = chunk.text[:250].strip() if chunk.text else None
+                if preview and len(chunk.text) > 250:
+                    preview += "..."
+
+                sources_map[doc_id] = DistinctSource(
+                    document_id=doc_id,
+                    knowledge_base_id=chunk.knowledge_base_id,
+                    file_name=chunk.file_name,
+                    page=chunk.page,
+                    pages=pages,
+                    score=round(chunk.score, 4),
+                    chunk_count=1,
+                    content_preview=preview,
+                    metadata=dict(chunk.metadata),
+                )
+            else:
+                src = sources_map[doc_id]
+                src.chunk_count += 1
+                if chunk.score > src.score:
+                    src.score = round(chunk.score, 4)
+                    if chunk.page is not None:
+                        src.page = chunk.page
+                    if chunk.text:
+                        preview = chunk.text[:250].strip()
+                        if len(chunk.text) > 250:
+                            preview += "..."
+                        src.content_preview = preview
+
+                if chunk.page is not None and chunk.page not in src.pages:
+                    src.pages.append(chunk.page)
+                    src.pages.sort()
+
+        return sorted(
+            sources_map.values(),
+            key=lambda s: s.score,
+            reverse=True,
+        )
 
 
 class RetrievalService:
@@ -132,14 +190,13 @@ class RetrievalService:
             )
 
         # ---------------------------------------------
-        # Search slightly more than required.
-        #
-        # This gives us room for deduplication.
+        # Search a broader pool of candidates
+        # to ensure distinct reference files are found.
         # ---------------------------------------------
 
         search_limit = max(
-            top_k * 2,
-            top_k,
+            top_k * 4,
+            20,
         )
 
         try:
@@ -171,7 +228,7 @@ class RetrievalService:
             ) from exc
 
         # ---------------------------------------------
-        # Deduplicate
+        # Deduplicate & balance diversity
         # ---------------------------------------------
 
         chunks = self._deduplicate(
@@ -199,12 +256,8 @@ class RetrievalService:
         limit: int,
     ) -> list[RetrievedChunk]:
 
-        chunks: list[RetrievedChunk] = []
-
+        candidates: list[RetrievedChunk] = []
         seen_ids: set[str] = set()
-
-        # Prevent near-identical chunk text from
-        # consuming the whole context window.
         seen_text: set[str] = set()
 
         for result in results:
@@ -261,7 +314,12 @@ class RetrievalService:
                 or {}
             )
 
-            chunks.append(
+            file_name = (
+                result.get("file_name")
+                or metadata.get("file_name")
+            )
+
+            candidates.append(
                 RetrievedChunk(
                     id=point_id,
                     text=text,
@@ -281,9 +339,7 @@ class RetrievalService:
                     page=result.get(
                         "page"
                     ),
-                    file_name=metadata.get(
-                        "file_name"
-                    ),
+                    file_name=file_name,
                     metadata=metadata,
                 )
             )
@@ -293,7 +349,29 @@ class RetrievalService:
                 normalized_text
             )
 
-            if len(chunks) >= limit:
-                break
+        # Count distinct documents present
+        doc_ids = {c.document_id for c in candidates}
 
-        return chunks
+        # If multiple distinct documents matched, ensure diversity across them
+        # so one file does not consume all slots before other relevant files are considered
+        if len(doc_ids) > 1:
+            max_per_doc = max(1, limit // len(doc_ids) + 1)
+            selected: list[RetrievedChunk] = []
+            doc_counts: dict[uuid.UUID, int] = {}
+            remaining: list[RetrievedChunk] = []
+
+            for chunk in candidates:
+                count = doc_counts.get(chunk.document_id, 0)
+                if count < max_per_doc and len(selected) < limit:
+                    selected.append(chunk)
+                    doc_counts[chunk.document_id] = count + 1
+                else:
+                    remaining.append(chunk)
+
+            # Fill any remaining slots up to limit with the next best scoring chunks
+            while len(selected) < limit and remaining:
+                selected.append(remaining.pop(0))
+
+            return selected
+
+        return candidates[:limit]

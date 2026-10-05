@@ -1,7 +1,8 @@
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +38,17 @@ from app.repositories.usage_repository import (
 from app.repositories.audit_repository import (
     AuditRepository,
 )
+from app.repositories.knowledge_repository import (
+    KnowledgeRepository,
+)
+
+from app.agent import (
+    AgentRouter,
+    ChatAgentGraph,
+    ChatAgentState,
+    RouteType,
+    ToolRegistry,
+)
 
 from app.services.guardrail_service import (
     GuardrailService,
@@ -60,6 +72,11 @@ class ChatSource:
 
     score: float
 
+    pages: list[int] = field(default_factory=list)
+    chunk_count: int = 1
+    content_preview: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class ChatResult:
@@ -72,6 +89,7 @@ class ChatResult:
 
     input_tokens: int
     output_tokens: int
+    total_tokens: int
 
     latency_ms: int
 
@@ -103,6 +121,27 @@ class ChatService:
 
         self.prompt_builder = (
             PromptBuilderService()
+        )
+
+        self.router = (
+            AgentRouter(
+                llm=self.llm
+            )
+        )
+
+        self.tools = (
+            ToolRegistry()
+        )
+
+        self.graph = (
+            ChatAgentGraph(
+                router=self.router,
+                retrieval_service=self.retrieval,
+                prompt_builder=self.prompt_builder,
+                llm_provider=self.llm,
+                tool_registry=self.tools,
+                guardrail_service=self.guardrails,
+            )
         )
 
     # =====================================================
@@ -247,52 +286,6 @@ class ChatService:
         history = history[-20:]
 
         # ---------------------------------------------
-        # Retrieval
-        # ---------------------------------------------
-
-        retrieval = (
-            await self.retrieval
-            .retrieve_for_bot(
-                db,
-                user_id=user_id,
-                bot_id=bot.id,
-                query=safe_user_message,
-                top_k=5,
-            )
-        )
-
-        # ---------------------------------------------
-        # RETRIEVAL GUARDRAILS
-        #
-        # Each retrieved chunk is untrusted.
-        # ---------------------------------------------
-
-        safe_retrieval = (
-            await self._guard_retrieval(
-                db,
-                bot_id=bot.id,
-                user_id=user_id,
-                conversation_id=(
-                    conversation.id
-                ),
-                retrieval=retrieval,
-            )
-        )
-
-        # ---------------------------------------------
-        # Prompt
-        # ---------------------------------------------
-
-        prompt = self.prompt_builder.build(
-            bot_version=bot_version,
-            user_message=(
-                safe_user_message
-            ),
-            history=history,
-            retrieval=safe_retrieval,
-        )
-
-        # ---------------------------------------------
         # Model configuration
         # ---------------------------------------------
 
@@ -351,18 +344,51 @@ class ChatService:
         )
 
         # ---------------------------------------------
-        # LLM
+        # Tool & Knowledge Base Availability
         # ---------------------------------------------
 
-        try:
-
-            response = await self.llm.chat(
-                messages=prompt.messages,
-                model=model.model_key,
-                temperature=temperature,
-                top_p=top_p,
-                max_tokens=max_tokens,
+        active_tools = (
+            await self.tools.get_active_bot_tools(
+                db,
+                bot_id=bot.id,
             )
+        )
+
+        kb_links = (
+            await KnowledgeRepository.list_for_bot(
+                db,
+                bot.id,
+            )
+        )
+        has_kb = bool(kb_links)
+
+        # ---------------------------------------------
+        # LangGraph Workflow Execution
+        # (Router -> RAG / Tools / Direct -> Generator)
+        # ---------------------------------------------
+        try:
+            graph_output = await self.graph.run(
+                {
+                    "user_id": user_id,
+                    "bot_id": bot.id,
+                    "conversation_id": conversation.id,
+                    "query": safe_user_message,
+                    "bot_version": bot_version,
+                    "history": history,
+                    "has_kb": has_kb,
+                    "available_tools": active_tools,
+                    "model_key": model.model_key,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "max_tokens": max_tokens,
+                    "db_session": db,
+                }
+            )
+
+            response = graph_output["response"]
+            safe_retrieval = graph_output.get("retrieval")
+            route_val = graph_output.get("route", RouteType.DIRECT.value)
+            route = RouteType(route_val)
 
         except Exception as exc:
 
@@ -453,6 +479,11 @@ class ChatService:
                         len(
                             safe_retrieval.chunks
                         )
+                        if (
+                            safe_retrieval
+                            and safe_retrieval.chunks
+                        )
+                        else 0
                     ),
                     "guardrail_warnings": (
                         output_evaluation
@@ -506,8 +537,15 @@ class ChatService:
             status="success",
             metadata={
                 "model": model.model_key,
-                "source_count": len(
-                    safe_retrieval.chunks
+                "source_count": (
+                    len(
+                        safe_retrieval.chunks
+                    )
+                    if (
+                        safe_retrieval
+                        and safe_retrieval.chunks
+                    )
+                    else 0
                 ),
                 "input_guardrail_count": len(
                     input_evaluation.executions
@@ -521,27 +559,49 @@ class ChatService:
         await db.commit()
 
         # ---------------------------------------------
-        # Sources
+        # Sources (Distinct by Document / Reference File)
         # ---------------------------------------------
 
-        sources = [
-            ChatSource(
-                document_id=chunk.document_id,
-                knowledge_base_id=(
-                    chunk.knowledge_base_id
-                ),
-                file_name=chunk.file_name,
-                page=chunk.page,
-                score=chunk.score,
+        sources = []
+        if safe_retrieval and safe_retrieval.chunks:
+            distinct_sources = (
+                safe_retrieval.get_distinct_sources()
             )
-            for chunk
-            in safe_retrieval.chunks
-        ]
+            sources = [
+                ChatSource(
+                    document_id=src.document_id,
+                    knowledge_base_id=(
+                        src.knowledge_base_id
+                    ),
+                    file_name=src.file_name,
+                    page=src.page,
+                    score=src.score,
+                    pages=src.pages,
+                    chunk_count=src.chunk_count,
+                    content_preview=(
+                        src.content_preview
+                    ),
+                    metadata=src.metadata,
+                )
+                for src in distinct_sources
+            ]
 
         warnings = [
             *input_evaluation.warnings,
             *output_evaluation.warnings,
         ]
+
+        input_tokens = (
+            response.usage.input_tokens
+        )
+        output_tokens = (
+            response.usage.output_tokens
+        )
+        total_tokens = (
+            response.usage.total_tokens
+            if response.usage.total_tokens > 0
+            else (input_tokens + output_tokens)
+        )
 
         return ChatResult(
             conversation_id=(
@@ -552,16 +612,9 @@ class ChatService:
             ),
             content=safe_output,
             model=model.model_key,
-            input_tokens=(
-                response
-                .usage
-                .input_tokens
-            ),
-            output_tokens=(
-                response
-                .usage
-                .output_tokens
-            ),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
             latency_ms=latency_ms,
             sources=sources,
             warnings=warnings,

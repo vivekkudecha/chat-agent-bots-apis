@@ -115,6 +115,8 @@ class Settings(BaseSettings):
 
     DEFAULT_TOP_K: int = 5
 
+    DEFAULT_SCORE_THRESHOLD: float = 0.40
+
     # ---------------------------------------------------------
     # Guardrails
     # ---------------------------------------------------------

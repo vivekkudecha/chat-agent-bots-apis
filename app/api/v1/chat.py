@@ -75,8 +75,17 @@ async def chat(
                 result.output_tokens
             ),
             total_tokens=(
+                result.total_tokens
+                or (
+                    result.input_tokens
+                    + result.output_tokens
+                )
+            ),
+            prompt_tokens=(
                 result.input_tokens
-                + result.output_tokens
+            ),
+            completion_tokens=(
+                result.output_tokens
             ),
         ),
 
@@ -95,7 +104,15 @@ async def chat(
                     source.file_name
                 ),
                 page=source.page,
+                pages=source.pages,
                 score=source.score,
+                chunk_count=(
+                    source.chunk_count
+                ),
+                content_preview=(
+                    source.content_preview
+                ),
+                metadata=source.metadata,
             )
             for source in result.sources
         ],

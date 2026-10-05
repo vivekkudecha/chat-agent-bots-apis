@@ -169,6 +169,7 @@
 
 
 import uuid
+from typing import Any
 
 from pydantic import (
     BaseModel,
@@ -210,7 +211,19 @@ class ChatSourceResponse(BaseModel):
 
     page: int | None = None
 
+    pages: list[int] = Field(
+        default_factory=list
+    )
+
     score: float
+
+    chunk_count: int = 1
+
+    content_preview: str | None = None
+
+    metadata: dict[str, Any] = Field(
+        default_factory=dict
+    )
 
 
 # =========================================================
@@ -224,6 +237,10 @@ class ChatUsageResponse(BaseModel):
     output_tokens: int = 0
 
     total_tokens: int = 0
+
+    prompt_tokens: int = 0
+
+    completion_tokens: int = 0
 
 
 # =========================================================

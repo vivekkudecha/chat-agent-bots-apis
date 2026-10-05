@@ -12,6 +12,7 @@ class TextChunk:
     text: str
 
     page: int | None = None
+    char_count: int | None = None
 
     metadata: dict[str, Any] = field(
         default_factory=dict
@@ -100,7 +101,9 @@ class ChunkingService:
                         index=chunk_index,
                         text=text,
                         page=section.page,
+                        char_count=len(text),
                         metadata={
+                            "char_count": len(text),
                             **section.metadata,
                         },
                     )
