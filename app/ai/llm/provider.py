@@ -81,6 +81,9 @@ class OpenAICompatibleProvider(LLMProvider):
         if base_url_normalized.endswith("/api"):
             base_url_normalized = base_url_normalized[:-4] + "/v1"
 
+        elif not base_url_normalized.endswith("/v1"):
+            base_url_normalized = f"{base_url_normalized}/v1"
+
         self.verify_ssl = (
             settings.LLM_VERIFY_SSL if verify_ssl is None else verify_ssl
         )
@@ -104,6 +107,49 @@ class OpenAICompatibleProvider(LLMProvider):
             max_retries=0,
         )
 
+    @staticmethod
+    def _normalize_messages(messages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        if not messages:
+            return []
+        
+        system_parts: list[str] = []
+        normalized: list[dict[str, Any]] = []
+        
+        for message in messages:
+            role = message.get("role")
+            content = message.get("content", "").strip()
+
+            if not content:
+                continue
+
+            if role == "system":
+                system_parts.append(content)
+            else:
+                normalized.append({
+                    "role": role,
+                    "content": content
+                })
+        normalized: list[dict[str, Any]] = []
+
+        if system_parts:
+            normalized.append({
+                'role': 'system',
+                'content': "\n\n".join(system_parts)
+            })
+
+        for message in messages:
+            role = message.get('role')
+            content = message.get("content", "").strip()
+
+            if normalized and normalized[-1]['role'] == role:
+                prev = normalized[-1]['content']
+                normalized[-1]['content'] = f"{prev}\n\n{content}".strip()
+            else:
+                normalized.append({'role': role, 'content': content})
+
+        return normalized
+
+
     # =====================================================
     # NORMAL CHAT
     # =====================================================
@@ -119,9 +165,12 @@ class OpenAICompatibleProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         try:
+
+            normalized_messages = self._normalize_messages(messages)
+
             kwargs: dict[str, Any] = {
                 "model": model,
-                "messages": messages,
+                "messages": normalized_messages,
                 "temperature": temperature,
                 "top_p": top_p,
                 "max_tokens": max_tokens,
@@ -189,9 +238,12 @@ class OpenAICompatibleProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[str]:
         try:
+
+            normalized_messages = self._normalize_messages(messages)
+
             kwargs: dict[str, Any] = {
                 "model": model,
-                "messages": messages,
+                "messages": normalized_messages,
                 "temperature": temperature,
                 "top_p": top_p,
                 "max_tokens": max_tokens,
@@ -234,9 +286,9 @@ def get_llm_provider() -> LLMProvider:
             _llm_provider = OpenAICompatibleProvider(
                 base_url=settings.VLLM_BASE_URL,
                 api_key=settings.VLLM_API_KEY,
-                verify_ssl=settings.LLM_VERIFY_SSL,
-                trust_env=settings.LLM_TRUST_ENV,
-                timeout=settings.LLM_TIMEOUT_SECONDS,
+                # verify_ssl=settings.LLM_VERIFY_SSL,
+                # trust_env=settings.LLM_TRUST_ENV,
+                # timeout=settings.LLM_TIMEOUT_SECONDS,
             )
         else:
             raise RuntimeError(f"Unsupported LLM provider: {provider}")
