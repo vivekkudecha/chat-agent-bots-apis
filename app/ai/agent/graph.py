@@ -42,6 +42,7 @@ class ChatAgentState(TypedDict, total=False):
     temperature: float
     top_p: float
     max_tokens: int | None
+    context_window: int | None
     db_session: Any
 
     # Routing determination
@@ -164,6 +165,12 @@ class ChatAgentGraph:
             return {"retrieval": None, "distinct_sources": []}
 
         try:
+            context_window = state.get("context_window")
+            max_gen_tokens = state.get("max_tokens") or 512
+            rag_budget = None
+            if context_window:
+                rag_budget = max(250, min(1500, int((context_window - max_gen_tokens) * 0.40)))
+
             retrieval = await self.retrieval_service.retrieve_for_bot(
                 db,
                 user_id=state["user_id"],
@@ -171,6 +178,7 @@ class ChatAgentGraph:
                 query=state["query"],
                 top_k=settings.DEFAULT_TOP_K,
                 score_threshold=settings.DEFAULT_SCORE_THRESHOLD,
+                context_budget=rag_budget,
             )
 
             safe_retrieval = retrieval
@@ -218,17 +226,20 @@ class ChatAgentGraph:
         Constructs context-aware prompt and calls LLM.
         """
         retrieval = state.get("retrieval")
-        prompt = self.prompt_builder.build(
+        llm_tools = None
+        if state.get("route") == RouteType.TOOL.value:
+            llm_tools = state.get("available_tools") or None
+
+        prompt = await self.prompt_builder.build_async(
             bot_version=state["bot_version"],
             user_message=state["query"],
             history=state.get("history", []),
             retrieval=retrieval,
             memory_context=state.get("memory_context"),
+            context_window=state.get("context_window"),
+            max_generation_tokens=state.get("max_tokens"),
+            tools=llm_tools,
         )
-
-        llm_tools = None
-        if state.get("route") == RouteType.TOOL.value:
-            llm_tools = state.get("available_tools") or None
 
         response = await self.llm.chat(
             messages=prompt.messages,

@@ -1,9 +1,13 @@
+import asyncio
+import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.repositories.bot_repository import BotRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.ai.rag.vector_store import VectorStoreService
@@ -12,6 +16,8 @@ from app.core.exceptions import (
     BotNotFoundException,
     RetrievalException,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -126,6 +132,7 @@ class RetrievalService:
         query: str,
         top_k: int = 5,
         score_threshold: float | None = None,
+        context_budget: int | None = None,
     ) -> RetrievalResult:
 
         # ---------------------------------------------
@@ -200,20 +207,68 @@ class RetrievalService:
         )
 
         try:
+            use_hybrid = getattr(settings, "RAG_HYBRID_SEARCH", True)
 
-            results = (
-                await self.vector_store.search(
+            if use_hybrid:
+                dense_task = self.vector_store.search(
                     query=query,
                     user_id=user_id,
-                    knowledge_base_ids=(
-                        knowledge_base_ids
-                    ),
+                    knowledge_base_ids=knowledge_base_ids,
                     top_k=search_limit,
-                    score_threshold=(
-                        score_threshold
-                    ),
+                    score_threshold=score_threshold,
                 )
-            )
+                lexical_task = self.vector_store.search_keyword(
+                    query=query,
+                    user_id=user_id,
+                    knowledge_base_ids=knowledge_base_ids,
+                    top_k=search_limit,
+                )
+
+                results_pair = await asyncio.gather(
+                    dense_task,
+                    lexical_task,
+                    return_exceptions=True,
+                )
+
+                dense_res = (
+                    results_pair[0]
+                    if isinstance(results_pair[0], list)
+                    else []
+                )
+                lexical_res = (
+                    results_pair[1]
+                    if isinstance(results_pair[1], list)
+                    else []
+                )
+
+                if isinstance(results_pair[0], Exception):
+                    logger.warning(
+                        "Dense search error during hybrid retrieval: %s",
+                        results_pair[0],
+                    )
+                if isinstance(results_pair[1], Exception):
+                    logger.warning(
+                        "Lexical search error during hybrid retrieval: %s",
+                        results_pair[1],
+                    )
+
+                if dense_res and lexical_res:
+                    results = self._reciprocal_rank_fusion(
+                        dense_res,
+                        lexical_res,
+                    )
+                elif dense_res:
+                    results = dense_res
+                else:
+                    results = lexical_res
+            else:
+                results = await self.vector_store.search(
+                    query=query,
+                    user_id=user_id,
+                    knowledge_base_ids=knowledge_base_ids,
+                    top_k=search_limit,
+                    score_threshold=score_threshold,
+                )
 
         except Exception as exc:
 
@@ -236,6 +291,19 @@ class RetrievalService:
             limit=top_k,
         )
 
+        # ---------------------------------------------
+        # Small model optimization: Extract focused snippets
+        # if token budget is constrained
+        # ---------------------------------------------
+        if context_budget and context_budget <= 1200 and chunks:
+            max_chars_per_chunk = max(180, int((context_budget * 4) / max(1, len(chunks))))
+            for chunk in chunks:
+                chunk.text = self._extract_focused_snippet(
+                    chunk.text,
+                    query=query,
+                    max_chars=max_chars_per_chunk,
+                )
+
         return RetrievalResult(
             query=query,
             chunks=chunks,
@@ -244,6 +312,102 @@ class RetrievalService:
             ),
             total_results=len(chunks),
         )
+
+    # =====================================================
+    # FOCUSED SNIPPET EXTRACTION
+    # =====================================================
+
+    @staticmethod
+    def _extract_focused_snippet(
+        text: str,
+        *,
+        query: str,
+        max_chars: int = 350,
+    ) -> str:
+        cleaned = text.strip()
+        if len(cleaned) <= max_chars:
+            return cleaned
+
+        query_words = {
+            w.lower()
+            for w in re.findall(r"\w+", query)
+            if len(w) > 2 and w.lower() not in {
+                "the", "and", "for", "with", "this", "that", "what", "from",
+                "have", "about", "your", "tell", "which",
+            }
+        }
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+        if len(sentences) <= 1:
+            return cleaned[:max_chars].strip() + "..."
+
+        scored = []
+        for idx, sentence in enumerate(sentences):
+            sent_words = {w.lower() for w in re.findall(r"\w+", sentence)}
+            overlap = len(query_words.intersection(sent_words)) if query_words else 1
+            scored.append((overlap, idx, sentence))
+
+        best = max(scored, key=lambda s: (s[0], -s[1]))
+        best_idx = best[1]
+
+        start_idx = max(0, best_idx - 1)
+        end_idx = min(len(sentences), best_idx + 2)
+        selected = sentences[start_idx:end_idx]
+
+        snippet = " ".join(selected).strip()
+        if len(snippet) > max_chars:
+            snippet = snippet[:max_chars].strip() + "..."
+        return snippet
+
+    # =====================================================
+    # RECIPROCAL RANK FUSION (RRF)
+    # =====================================================
+
+    def _reciprocal_rank_fusion(
+        self,
+        dense_results: list[dict[str, Any]],
+        lexical_results: list[dict[str, Any]],
+        k: int = 60,
+    ) -> list[dict[str, Any]]:
+
+        scores: dict[str, float] = {}
+        doc_map: dict[str, dict[str, Any]] = {}
+
+        for rank, item in enumerate(dense_results):
+            item_id = str(item["id"])
+            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
+            if item_id not in doc_map:
+                doc_map[item_id] = dict(item)
+
+        for rank, item in enumerate(lexical_results):
+            item_id = str(item["id"])
+            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
+            if item_id not in doc_map:
+                doc_map[item_id] = dict(item)
+
+        # Sort items by fused RRF score
+        sorted_ids = sorted(
+            scores.keys(),
+            key=lambda i: scores[i],
+            reverse=True,
+        )
+        fused_results: list[dict[str, Any]] = []
+
+        # Normalization baseline: top ranking in both modalities
+        max_possible_rrf = 2.0 / (k + 1)
+
+        for item_id in sorted_ids:
+            item = doc_map[item_id]
+            original_score = item.get("score", 0.0)
+            fused_score = round(
+                min(1.0, scores[item_id] / max_possible_rrf),
+                4,
+            )
+            item["rrf_score"] = scores[item_id]
+            # Blend semantic confidence with lexical boost
+            item["score"] = max(original_score, fused_score)
+            fused_results.append(item)
+
+        return fused_results
 
     # =====================================================
     # DEDUPLICATION
@@ -352,10 +516,10 @@ class RetrievalService:
         # Count distinct documents present
         doc_ids = {c.document_id for c in candidates}
 
-        # If multiple distinct documents matched, ensure diversity across them
-        # so one file does not consume all slots before other relevant files are considered
+        # If multiple distinct documents matched, preserve primary relevance
+        # while preventing any single document from starving all other references
         if len(doc_ids) > 1:
-            max_per_doc = max(1, limit // len(doc_ids) + 1)
+            max_per_doc = max(2, min(3, max(1, limit - 1)))
             selected: list[RetrievedChunk] = []
             doc_counts: dict[uuid.UUID, int] = {}
             remaining: list[RetrievedChunk] = []

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from app.config import settings
 from app.models.bot import BotVersion
 from app.models.conversation import Message
 
@@ -57,7 +58,7 @@ Security rules:
 """.strip()
 
     # =====================================================
-    # BUILD
+    # BUILD (SYNCHRONOUS WRAPPER)
     # =====================================================
 
     def build(
@@ -68,14 +69,106 @@ Security rules:
         history: list[Message] | None = None,
         retrieval: Any | None = None,
         memory_context: Any | None = None,
+        context_window: int | None = None,
+        max_generation_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> BuiltPrompt:
+        return self._build_internal(
+            bot_version=bot_version,
+            user_message=user_message,
+            history=history,
+            retrieval=retrieval,
+            memory_context=memory_context,
+            context_window=context_window,
+            max_generation_tokens=max_generation_tokens,
+            tools=tools,
+        )
+
+    # =====================================================
+    # BUILD ASYNC (ASYNC JOINED PROMPT CONSTRUCTION)
+    # =====================================================
+
+    async def build_async(
+        self,
+        *,
+        bot_version: BotVersion,
+        user_message: str,
+        history: list[Message] | None = None,
+        retrieval: Any | None = None,
+        memory_context: Any | None = None,
+        context_window: int | None = None,
+        max_generation_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> BuiltPrompt:
+        return self._build_internal(
+            bot_version=bot_version,
+            user_message=user_message,
+            history=history,
+            retrieval=retrieval,
+            memory_context=memory_context,
+            context_window=context_window,
+            max_generation_tokens=max_generation_tokens,
+            tools=tools,
+        )
+
+    # =====================================================
+    # INTERNAL BUDGET-AWARE PROMPT ASSEMBLER
+    # =====================================================
+
+    def _build_internal(
+        self,
+        *,
+        bot_version: BotVersion,
+        user_message: str,
+        history: list[Message] | None = None,
+        retrieval: Any | None = None,
+        memory_context: Any | None = None,
+        context_window: int | None = None,
+        max_generation_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> BuiltPrompt:
+
+        # ---------------------------------------------
+        # 1. Calculate Available Prompt Budget
+        # ---------------------------------------------
+        total_context = context_window or 4096
+        reserved_gen = max_generation_tokens or 512
+        safety_margin = 80
+        max_prompt_budget = max(400, total_context - reserved_gen - safety_margin)
+
+        # Estimate fixed token costs
+        bot_instruction = (bot_version.system_instruction or "").strip()
+        fixed_tokens = (
+            len(self.PLATFORM_INSTRUCTION) // 4
+            + len(bot_instruction) // 4
+            + len(user_message) // 4
+            + (sum(len(str(t)) // 4 for t in tools) if tools else 0)
+        )
+
+        flexible_budget = max(150, max_prompt_budget - fixed_tokens)
+
+        # ---------------------------------------------
+        # 2. Dynamic Budget Allocation
+        # ---------------------------------------------
+        has_retrieval = bool(retrieval and getattr(retrieval, "chunks", None))
+        if has_retrieval:
+            # Allocate up to 60% of flexible budget to RAG (capped by RAG_MAX_CONTEXT_TOKENS)
+            max_rag_allowed = getattr(settings, "RAG_MAX_CONTEXT_TOKENS", 1500)
+            rag_budget = min(max_rag_allowed, max(120, int(flexible_budget * 0.60)))
+            context_text, source_count = self._build_context(retrieval, max_tokens=rag_budget)
+            used_rag_tokens = len(context_text) // 4
+            # Remaining flexible tokens go to history & episodic memory
+            history_budget = max(80, flexible_budget - used_rag_tokens)
+        else:
+            context_text = ""
+            source_count = 0
+            history_budget = flexible_budget
 
         messages: list[dict[str, Any]] = []
 
         # ---------------------------------------------
         # PLATFORM SYSTEM INSTRUCTION
         # ---------------------------------------------
-
         messages.append(
             {
                 "role": "system",
@@ -86,9 +179,6 @@ Security rules:
         # ---------------------------------------------
         # BOT INSTRUCTION
         # ---------------------------------------------
-
-        bot_instruction = (bot_version.system_instruction or "").strip()
-
         if bot_instruction:
             messages.append(
                 {
@@ -106,14 +196,7 @@ Security rules:
         # ---------------------------------------------
         # KNOWLEDGE CONTEXT
         # ---------------------------------------------
-
-        context_text = ""
-        source_count = 0
-
-        if retrieval and getattr(retrieval, "chunks", None):
-            context_text = self._build_context(retrieval)
-            source_count = len(retrieval.chunks)
-
+        if context_text:
             messages.append(
                 {
                     "role": "system",
@@ -131,7 +214,6 @@ Security rules:
         # ---------------------------------------------
         # TEMPORAL CONTEXT
         # ---------------------------------------------
-
         if memory_context and getattr(memory_context, "temporal", None):
             cue = getattr(memory_context.temporal, "prompt_cue", None)
             if cue:
@@ -145,12 +227,17 @@ Security rules:
         # ---------------------------------------------
         # EPISODIC MEMORY (CONVERSATION SUMMARY)
         # ---------------------------------------------
-
         if memory_context and getattr(memory_context, "summary", None):
             summary_obj = memory_context.summary
             if hasattr(summary_obj, "to_prompt_text"):
                 summary_text = summary_obj.to_prompt_text()
                 if summary_text:
+                    # Allocate up to 35% of history budget to summary for small models
+                    summary_limit = max(100, history_budget // 3)
+                    if len(summary_text) // 4 > summary_limit:
+                        summary_text = summary_text[: summary_limit * 4].strip() + "..."
+                    history_budget -= len(summary_text) // 4
+
                     messages.append(
                         {
                             "role": "system",
@@ -166,31 +253,50 @@ Security rules:
 
         # ---------------------------------------------
         # CONVERSATION HISTORY (WORKING BUFFER)
+        # Greedily pack from newest to oldest within history_budget
         # ---------------------------------------------
-
         effective_history = history
         if memory_context and getattr(memory_context, "working_history", None):
             effective_history = memory_context.working_history
 
-        for message in (effective_history or []):
-            if message.role not in {"user", "assistant"}:
-                continue
+        valid_history_messages = [
+            m for m in (effective_history or [])
+            if m.role in {"user", "assistant"} and (m.content or "").strip()
+        ]
 
-            content = (message.content or "").strip()
-            if not content:
-                continue
+        packed_history: list[dict[str, Any]] = []
+        used_hist_tokens = 0
 
-            messages.append(
+        # Iterate backwards to preserve the most recent turns
+        for message in reversed(valid_history_messages):
+            msg_content = (message.content or "").strip()
+            msg_tokens = len(msg_content) // 4 + 10
+            if used_hist_tokens + msg_tokens > history_budget:
+                if not packed_history:
+                    # Keep at least a truncated version of the most recent message
+                    allowed_chars = max(150, (history_budget - used_hist_tokens) * 4)
+                    packed_history.append(
+                        {
+                            "role": message.role,
+                            "content": msg_content[-allowed_chars:].strip(),
+                        }
+                    )
+                break
+            packed_history.append(
                 {
                     "role": message.role,
-                    "content": content,
+                    "content": msg_content,
                 }
             )
+            used_hist_tokens += msg_tokens
+
+        # Reverse back to chronological order
+        packed_history.reverse()
+        messages.extend(packed_history)
 
         # ---------------------------------------------
         # CURRENT MESSAGE
         # ---------------------------------------------
-
         messages.append(
             {
                 "role": "user",
@@ -211,8 +317,15 @@ Security rules:
     def _build_context(
         self,
         retrieval: Any,
-    ) -> str:
+        max_tokens: int | None = None,
+    ) -> tuple[str, int]:
+        target_budget = (
+            max_tokens
+            or getattr(settings, "RAG_MAX_CONTEXT_TOKENS", 1500)
+        )
         sections = []
+        packed_count = 0
+        used_tokens = 0
 
         for index, chunk in enumerate(
             retrieval.chunks,
@@ -231,10 +344,27 @@ Security rules:
             source_parts.append(f"Document ID: {chunk.document_id}")
 
             header = " | ".join(source_parts)
+            chunk_text = (chunk.text or "").strip()
+            # Approximate token count (1 token ~= 4 characters)
+            chunk_tokens = (len(header) + len(chunk_text) + 20) // 4
+
+            if used_tokens + chunk_tokens > target_budget:
+                # If nothing has been packed yet, include a truncated preview to prevent empty context
+                if packed_count == 0:
+                    remaining_chars = max(300, (target_budget - used_tokens) * 4)
+                    truncated_text = chunk_text[:remaining_chars].strip() + "..."
+                    sections.append(
+                        f"[{header}]\n"
+                        f"{truncated_text}"
+                    )
+                    packed_count += 1
+                break
 
             sections.append(
                 f"[{header}]\n"
-                f"{chunk.text}"
+                f"{chunk_text}"
             )
+            used_tokens += chunk_tokens
+            packed_count += 1
 
-        return "\n\n---\n\n".join(sections)
+        return "\n\n---\n\n".join(sections), packed_count

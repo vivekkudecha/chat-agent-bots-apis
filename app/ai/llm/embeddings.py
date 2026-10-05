@@ -75,46 +75,70 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         if not texts:
             return []
 
-        results: list[list[float]] = []
         batch_size = 32
+        concurrency = max(1, getattr(settings, "EMBEDDING_CONCURRENCY", 4))
+        semaphore = asyncio.Semaphore(concurrency)
+
+        batches = [
+            texts[i : i + batch_size]
+            for i in range(0, len(texts), batch_size)
+        ]
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i : i + batch_size]
-                try:
-                    # 1. Try native Ollama /api/embed endpoint (supports batching)
-                    response = await client.post(
-                        f"{self.base_url}/api/embed",
-                        json={
-                            "model": self.model_name,
-                            "input": batch,
-                        },
-                    )
+            async def process_batch(
+                batch_idx: int,
+                batch: list[str],
+            ) -> tuple[int, list[list[float]]]:
+                async with semaphore:
+                    batch_res: list[list[float]] = []
+                    try:
+                        # 1. Try native Ollama /api/embed endpoint (supports batching)
+                        response = await client.post(
+                            f"{self.base_url}/api/embed",
+                            json={
+                                "model": self.model_name,
+                                "input": batch,
+                            },
+                        )
 
-                    if response.status_code == 200:
-                        data = response.json()
-                        embeddings = data.get("embeddings", [])
-                        if embeddings:
-                            if len(embeddings[0]) != self._dimension:
-                                self._dimension = len(embeddings[0])
-                            results.extend(embeddings)
-                            continue
+                        if response.status_code == 200:
+                            data = response.json()
+                            embeddings = data.get("embeddings", [])
+                            if embeddings:
+                                if len(embeddings[0]) != self._dimension:
+                                    self._dimension = len(embeddings[0])
+                                return batch_idx, embeddings
 
-                    logger.warning(
-                        "Ollama /api/embed returned status %d. Falling back to /api/embeddings.",
-                        response.status_code,
-                    )
-                except httpx.HTTPError as exc:
-                    logger.warning(
-                        "Ollama /api/embed request failed: %s. Falling back to /api/embeddings.",
-                        exc,
-                    )
+                        logger.warning(
+                            "Ollama /api/embed returned status %d for batch %d. Falling back to /api/embeddings.",
+                            response.status_code,
+                            batch_idx,
+                        )
+                    except httpx.HTTPError as exc:
+                        logger.warning(
+                            "Ollama /api/embed request failed for batch %d: %s. Falling back to /api/embeddings.",
+                            batch_idx,
+                            exc,
+                        )
 
-                # 2. Fallback to /api/embeddings per item
-                for text in batch:
-                    item_emb = await self._embed_single_fallback(client, text)
-                    results.append(item_emb)
+                    # 2. Fallback to /api/embeddings per item
+                    for text in batch:
+                        item_emb = await self._embed_single_fallback(client, text)
+                        batch_res.append(item_emb)
 
+                    return batch_idx, batch_res
+
+            tasks = [
+                process_batch(idx, batch)
+                for idx, batch in enumerate(batches)
+            ]
+            batch_results = await asyncio.gather(*tasks)
+
+        # Ensure original text ordering is strictly preserved
+        batch_results.sort(key=lambda x: x[0])
+        results: list[list[float]] = [
+            emb for _, b_res in batch_results for emb in b_res
+        ]
         return results
 
     async def embed_query(

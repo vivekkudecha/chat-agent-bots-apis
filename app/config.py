@@ -46,6 +46,8 @@ class Settings(BaseSettings):
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
+    EMBEDDING_CONCURRENCY: int = 4
+
     # ---------------------------------------------------------
     # LLM & vLLM
     # ---------------------------------------------------------
@@ -120,6 +122,10 @@ class Settings(BaseSettings):
     DEFAULT_TOP_K: int = 5
 
     DEFAULT_SCORE_THRESHOLD: float = 0.40
+
+    RAG_MAX_CONTEXT_TOKENS: int = 1500
+
+    RAG_HYBRID_SEARCH: bool = True
 
     # ---------------------------------------------------------
     # Guardrails

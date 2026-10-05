@@ -3,6 +3,9 @@ import logging
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
+    PayloadSchemaType,
+    TextIndexParams,
+    TokenizerType,
     VectorParams,
 )
 
@@ -76,21 +79,44 @@ async def ensure_collection(
         collection_name
     )
 
-    if exists:
-        return
+    if not exists:
+        logger.info(
+            "Creating Qdrant collection: %s",
+            collection_name,
+        )
 
-    logger.info(
-        "Creating Qdrant collection: %s",
-        collection_name,
-    )
+        await qdrant_client.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(
+                size=vector_size,
+                distance=distance,
+            ),
+        )
 
-    await qdrant_client.create_collection(
-        collection_name=collection_name,
-        vectors_config=VectorParams(
-            size=vector_size,
-            distance=distance,
-        ),
-    )
+    # Ensure payload indexes for high-volume filtering & keyword search
+    try:
+        for field in ("user_id", "knowledge_base_id", "document_id"):
+            await qdrant_client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+
+        await qdrant_client.create_payload_index(
+            collection_name=collection_name,
+            field_name="text",
+            field_schema=TextIndexParams(
+                type="text",
+                tokenizer=TokenizerType.WORD,
+                lowercase=True,
+            ),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed or partial payload index creation on %s: %s",
+            collection_name,
+            exc,
+        )
 
 
 # ---------------------------------------------------------

@@ -266,28 +266,46 @@ class ChatService:
         await db.commit()
 
         # ---------------------------------------------
-        # Chat Memory Context (Working memory, episodic summary, temporal)
+        # Async Parallel Resolution of Prerequisites:
+        # Chat Memory, Model Config, Tools, and Knowledge Bases
         # ---------------------------------------------
 
-        memory_context = await self.memory.build_context(
+        memory_task = self.memory.build_context(
             db,
             conversation=conversation,
             current_message_id=user_db_message.id,
         )
+        model_config_task = BotRepository.get_primary_model_config(
+            db,
+            bot_id=bot.id,
+        )
+        tools_task = self.tools.get_active_bot_tools(
+            db,
+            bot_id=bot.id,
+        )
+        kb_task = KnowledgeRepository.list_for_bot(
+            db,
+            bot.id,
+        )
+
+        (
+            memory_context,
+            model_config,
+            active_tools,
+            kb_links,
+        ) = await asyncio.gather(
+            memory_task,
+            model_config_task,
+            tools_task,
+            kb_task,
+        )
 
         history = memory_context.working_history
+        has_kb = bool(kb_links)
 
         # ---------------------------------------------
-        # Model configuration
+        # Model configuration & Context Window Resolution
         # ---------------------------------------------
-
-        model_config = (
-            await BotRepository
-            .get_primary_model_config(
-                db,
-                bot_id=bot.id,
-            )
-        )
 
         model = None
         if model_config:
@@ -334,25 +352,7 @@ class ChatService:
             if model_config
             else 2048
         )
-
-        # ---------------------------------------------
-        # Tool & Knowledge Base Availability
-        # ---------------------------------------------
-
-        active_tools = (
-            await self.tools.get_active_bot_tools(
-                db,
-                bot_id=bot.id,
-            )
-        )
-
-        kb_links = (
-            await KnowledgeRepository.list_for_bot(
-                db,
-                bot.id,
-            )
-        )
-        has_kb = bool(kb_links)
+        context_window = getattr(model, "context_window", None) or 4096
 
         # ---------------------------------------------
         # LangGraph Workflow Execution
@@ -374,6 +374,7 @@ class ChatService:
                     "temperature": temperature,
                     "top_p": top_p,
                     "max_tokens": max_tokens,
+                    "context_window": context_window,
                     "db_session": db,
                 }
             )
