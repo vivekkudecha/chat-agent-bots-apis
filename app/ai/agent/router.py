@@ -56,7 +56,7 @@ Respond with ONLY one word: DIRECT, RAG, or TOOL."""
 
     # Pattern for quick web search intent detection
     SEARCH_INTENT_PATTERN = re.compile(
-        r"(?:\b(?:search\s+(?:the\s+web|online|for|google)|look\s+up|latest\s+news|current\s+events|who\s+won|stock\s+price|live\s+score|weather\s+in|what\s+happened\s+(?:in|today|recently))\b)",
+        r"(?:\b(?:search\s+(?:the\s+web|online|for|google)|look\s+up|latest\s+news|current\s+events|who\s+won|stock\s+price|live\s+score|weather\s+in|what\s+(?:happened|happned)\s+(?:in|to|at|today|recently)|what(?:\'s|\s+is)\s+happening|breaking\s+news|today(?:'s)?\s+news|news\s+(?:today|about|in|on))\b)",
         re.IGNORECASE,
     )
 

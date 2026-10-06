@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, TYPE_CHECKING
 
 from app.config import settings
@@ -24,6 +25,13 @@ PromptBuildResult = BuiltPrompt
 
 
 class PromptBuilderService:
+
+    @staticmethod
+    def _is_raw_tool_json(content: str) -> bool:
+        cleaned = (content or "").strip()
+        if not cleaned:
+            return False
+        return bool(re.match(r'^\s*\{\s*"{1,2}(?:name|tool|function)"{1,2}\s*:', cleaned))
 
     PLATFORM_INSTRUCTION = """
 You are an AI assistant running inside a managed multi-bot platform.
@@ -208,9 +216,6 @@ Security rules:
         # ---------------------------------------------
         bot_meta = getattr(bot_version, "metadata_", None)
         if not isinstance(bot_meta, dict):
-            bot_obj = getattr(bot_version, "bot", None)
-            bot_meta = getattr(bot_obj, "metadata_", {}) if bot_obj else {}
-        if not isinstance(bot_meta, dict):
             bot_meta = {}
 
         lang_pref = bot_meta.get("language") or getattr(settings, "DEFAULT_LANGUAGE", "en")
@@ -256,7 +261,7 @@ Security rules:
         # ---------------------------------------------
         # AVAILABLE TOOLS
         # ---------------------------------------------
-        if tools:
+        if tools and not tool_results:
             tool_descs = []
             for t in tools:
                 fn = t.get("function", {})
@@ -294,8 +299,11 @@ Security rules:
                         "EXTERNAL TOOL EXECUTION DATA\n\n"
                         "The following external data was retrieved from tool executions for this turn:\n\n"
                         f"<tool_results>\n{tool_content}\n</tool_results>\n\n"
-                        "Use these external results to provide a comprehensive, accurate, up-to-date answer. "
-                        "Cite reference URLs or sources when relevant. Ensure your response is strictly in English."
+                        "CRITICAL INSTRUCTIONS:\n"
+                        "1. Do NOT emit JSON or function calls.\n"
+                        "2. Respond directly in natural, fluent English using the above information.\n"
+                        "3. Summarize and explain the relevant news or facts clearly to the user.\n"
+                        "4. Include key source URLs or references if available."
                     ),
                 }
             )
@@ -350,7 +358,9 @@ Security rules:
 
         valid_history_messages = [
             m for m in (effective_history or [])
-            if m.role in {"user", "assistant"} and (m.content or "").strip()
+            if m.role in {"user", "assistant"}
+            and (m.content or "").strip()
+            and not (m.role == "assistant" and self._is_raw_tool_json(m.content))
         ]
 
         packed_history: list[dict[str, Any]] = []

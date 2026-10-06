@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -181,6 +182,103 @@ class OpenAICompatibleProvider(LLMProvider):
         normalized.extend(merged_convo)
         return normalized
 
+    @staticmethod
+    def _extract_tool_calls_from_content(
+        content: str, tools: list[dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Fallback parser for open-source models (Llama 3.2, Gemma, Qwen) running
+        on Ollama/vLLM that output function calls as JSON in the message content
+        instead of populating tool_calls in the response choice.
+        Handles doubled quotation marks (tokenizer artifacts like ""parameters""),
+        markdown code fences, and text-embedded tool call JSON objects.
+        """
+        if not content:
+            return []
+
+        text = content.strip()
+
+        # Strip markdown code blocks if wrapped
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+
+        # Strip <tool_call> tags if wrapped
+        text = re.sub(r"</?tool_call>", "", text).strip()
+
+        # Normalize doubled quotes (e.g. Ollama/Llama 3.2 tokenizer artifact: ""parameters"")
+        normalized = re.sub(r'""+', '"', text)
+
+        # Build set of expected tool names if available
+        known_tool_names = set()
+        if tools:
+            for t in tools:
+                fn = t.get("function", {})
+                if fn.get("name"):
+                    known_tool_names.add(fn["name"])
+        if not known_tool_names:
+            known_tool_names.add("web_search")
+
+        def try_parse_candidate(obj_str: str) -> dict | list | None:
+            try:
+                val = json.loads(obj_str)
+                if isinstance(val, dict):
+                    return val
+                if isinstance(val, list) and val and isinstance(val[0], dict):
+                    return val
+            except Exception:
+                pass
+            return None
+
+        # 1. Try parsing the whole normalized string
+        parsed = try_parse_candidate(normalized)
+
+        # 2. If direct parse fails, try extracting a JSON block or object
+        if not parsed:
+            match = re.search(r"(\[\s*\{.*?\}\s*\]|\{.*?\})", normalized, re.DOTALL)
+            if match:
+                parsed = try_parse_candidate(match.group(1))
+
+        if not parsed:
+            return []
+
+        def to_tool_call(item: dict) -> dict[str, Any] | None:
+            name = item.get("name") or item.get("tool") or item.get("function")
+            if not name or not isinstance(name, str):
+                return None
+            if known_tool_names and name not in known_tool_names:
+                return None
+            args = item.get("parameters") or item.get("arguments") or item.get("args") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {"raw": args}
+            elif not isinstance(args, dict):
+                args = {}
+
+            return {
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": args,
+                },
+            }
+
+        results: list[dict[str, Any]] = []
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    tc = to_tool_call(item)
+                    if tc:
+                        results.append(tc)
+        elif isinstance(parsed, dict):
+            tc = to_tool_call(parsed)
+            if tc:
+                results.append(tc)
+
+        return results
 
     # =====================================================
     # NORMAL CHAT
@@ -250,6 +348,12 @@ class OpenAICompatibleProvider(LLMProvider):
                             },
                         }
                     )
+            elif content:
+                # Fallback: Extract tool calls from text if model outputs JSON in content
+                extracted_calls = self._extract_tool_calls_from_content(content, tools)
+                if extracted_calls:
+                    parsed_tool_calls = extracted_calls
+                    content = ""  # Clean raw JSON so it is not shown to user
 
             raw_usage = getattr(response, "usage", None)
             if raw_usage:

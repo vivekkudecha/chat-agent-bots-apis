@@ -10,7 +10,7 @@ from app.ai.agent.router import AgentRouter
 from app.ai.agent.state import RouteType
 from app.ai.agent.tools import ToolRegistry
 from app.config import settings
-from app.ai.llm.provider import LLMProvider, LLMResponse
+from app.ai.llm.provider import LLMProvider, LLMResponse, OpenAICompatibleProvider
 
 if TYPE_CHECKING:
     from app.models.bot import BotVersion
@@ -266,13 +266,14 @@ class ChatAgentGraph:
         enable_web_search = state.get("enable_web_search", False)
         route = state.get("route", RouteType.DIRECT.value)
 
-        # Pass tools to model if routed to TOOL, or web search is enabled, or tools exist
-        llm_tools = None
-        if route == RouteType.TOOL.value or enable_web_search or available_tools:
-            llm_tools = available_tools or None
-
         tool_results = list(state.get("tool_results") or [])
         tool_calls = list(state.get("tool_calls") or [])
+
+        # If tool results are ALREADY gathered (e.g. pre-fetched by _tool_node),
+        # do not pass tools to LLM. The LLM must synthesize the answer using tool_results.
+        llm_tools = None
+        if not tool_results and (route == RouteType.TOOL.value or enable_web_search or available_tools):
+            llm_tools = available_tools or None
 
         prompt = await self.prompt_builder.build_async(
             bot_version=state["bot_version"],
@@ -320,7 +321,7 @@ class ChatAgentGraph:
                     }
                 )
 
-            # Follow-up generation with tool results included in prompt context
+            # Follow-up generation with tool results included in prompt context and tools=None
             followup_prompt = await self.prompt_builder.build_async(
                 bot_version=state["bot_version"],
                 user_message=state["query"],
@@ -339,7 +340,51 @@ class ChatAgentGraph:
                 temperature=state.get("temperature", 0.7),
                 top_p=state.get("top_p", 1.0),
                 max_tokens=state.get("max_tokens"),
+                tools=None,
             )
+
+        # Safety net: If response.content still looks like raw tool JSON, recover
+        if response.content:
+            leaked_calls = OpenAICompatibleProvider._extract_tool_calls_from_content(
+                response.content, available_tools
+            )
+            if leaked_calls:
+                logger.warning("LLM response contained unparsed tool JSON; recovering...")
+                for lc in leaked_calls:
+                    fn = lc.get("function", {})
+                    t_name = fn.get("name", "")
+                    t_args = fn.get("arguments", {})
+                    if not any(tr.get("name") == t_name for tr in tool_results):
+                        exec_res = await self.tool_registry.execute_tool(
+                            t_name,
+                            t_args,
+                            context={
+                                "user_id": state.get("user_id"),
+                                "bot_id": state.get("bot_id"),
+                                "conversation_id": state.get("conversation_id"),
+                            },
+                        )
+                        tool_results.append({"name": t_name, "arguments": t_args, "result": exec_res})
+
+                recovery_prompt = await self.prompt_builder.build_async(
+                    bot_version=state["bot_version"],
+                    user_message=state["query"],
+                    history=state.get("history", []),
+                    retrieval=retrieval,
+                    memory_context=state.get("memory_context"),
+                    context_window=state.get("context_window"),
+                    max_generation_tokens=state.get("max_tokens"),
+                    tools=None,
+                    tool_results=tool_results,
+                )
+                response = await self.llm.chat(
+                    messages=recovery_prompt.messages,
+                    model=state["model_key"],
+                    temperature=0.3,
+                    top_p=1.0,
+                    max_tokens=state.get("max_tokens"),
+                    tools=None,
+                )
 
         # Merge any web search results into distinct_sources
         distinct_sources = list(state.get("distinct_sources") or [])
