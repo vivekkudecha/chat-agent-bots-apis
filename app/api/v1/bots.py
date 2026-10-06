@@ -28,6 +28,7 @@ from app.database import get_db
 
 from app.dependencies.auth import (
     get_current_user,
+    require_admin,
 )
 
 from app.models import User
@@ -73,7 +74,7 @@ async def create_bot(
     payload: BotCreateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(
-        get_current_user
+        require_admin
     ),
 ):
 
@@ -114,14 +115,14 @@ async def create_bot_with_documents(
     system_instruction: str | None = Form(default=None, description="System instruction / prompt"),
     welcome_message: str | None = Form(default=None, description="Greeting message"),
     conversation_starters: str | None = Form(default=None, description="JSON array or newline/comma-separated conversation starters"),
-    visibility: str = Form(default="private", description="Bot visibility: private, workspace, public"),
+    visibility: str = Form(default="public", description="Bot visibility: private, workspace, public"),
     avatar_url: str | None = Form(default=None, description="Avatar image URL"),
     metadata: str | None = Form(default=None, description="JSON string object for extra metadata"),
     knowledge_base_id: uuid.UUID | None = Form(default=None, description="Existing KB ID to attach and upload into"),
     knowledge_base_name: str | None = Form(default=None, description="Custom name if creating a new dedicated KB"),
     files: list[UploadFile] = File(default=[], description="Multiple files up to 200MB"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     """
     Create a new bot and simultaneously upload, extract, chunk, embed,
@@ -196,10 +197,12 @@ async def list_bots(
 ):
 
     service = BotService()
+    is_admin = current_user.role == "admin" or current_user.is_superuser
 
     result = await service.list(
         db,
         user_id=current_user.id,
+        is_admin=is_admin,
         page=page,
         page_size=page_size,
     )
@@ -234,11 +237,13 @@ async def get_bot(
 ):
 
     service = BotService()
+    is_admin = current_user.role == "admin" or current_user.is_superuser
 
     bot = await service.get(
         db,
         bot_id=bot_id,
         user_id=current_user.id,
+        is_admin=is_admin,
     )
 
     return BotDetailResponse.model_validate(
@@ -259,7 +264,7 @@ async def update_bot(
     payload: BotUpdateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(
-        get_current_user
+        require_admin
     ),
 ):
 
@@ -269,6 +274,7 @@ async def update_bot(
         db,
         bot_id=bot_id,
         user_id=current_user.id,
+        is_admin=True,
         name=payload.name,
         description=payload.description,
         visibility=payload.visibility,
@@ -291,13 +297,14 @@ async def update_bot(
 async def get_bot_edit_info(
     bot_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     service = BotService()
     bot = await service.get(
         db,
         bot_id=bot_id,
         user_id=current_user.id,
+        is_admin=True,
     )
     links = await KnowledgeRepository.list_for_bot(db, bot_id=bot.id)
     knowledge_base_id = links[0].knowledge_base_id if links else None
@@ -333,7 +340,7 @@ async def update_bot_with_documents(
     remove_document_ids: str = Form(default="[]"),
     files: list[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
 ):
     if visibility not in {"private", "organization", "public"}:
         raise ValidationException("Bot visibility is invalid.")
@@ -363,6 +370,7 @@ async def update_bot_with_documents(
         db,
         bot_id=bot_id,
         user_id=current_user.id,
+        is_admin=True,
     )
     links = await KnowledgeRepository.list_for_bot(db, bot_id=bot.id)
     if links:
@@ -500,6 +508,7 @@ async def update_bot_with_documents(
             db,
             bot_id=bot.id,
             user_id=current_user.id,
+            is_admin=True,
             name=name,
             description=description,
             visibility=visibility,
@@ -556,7 +565,7 @@ async def delete_bot(
     bot_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(
-        get_current_user
+        require_admin
     ),
 ):
 
@@ -566,6 +575,7 @@ async def delete_bot(
         db,
         bot_id=bot_id,
         user_id=current_user.id,
+        is_admin=True,
     )
 
     return None
@@ -583,7 +593,7 @@ async def publish_bot(
     bot_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(
-        get_current_user
+        require_admin
     ),
 ):
 
@@ -593,6 +603,7 @@ async def publish_bot(
         db,
         bot_id=bot_id,
         user_id=current_user.id,
+        is_admin=True,
     )
 
     return BotVersionResponse.model_validate(
@@ -647,7 +658,7 @@ async def attach_knowledge_base(
     knowledge_base_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(
-        get_current_user
+        require_admin
     ),
 ):
 
@@ -660,6 +671,7 @@ async def attach_knowledge_base(
             knowledge_base_id
         ),
         user_id=current_user.id,
+        is_admin=True,
     )
 
     return None
@@ -678,7 +690,7 @@ async def detach_knowledge_base(
     knowledge_base_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(
-        get_current_user
+        require_admin
     ),
 ):
 
@@ -691,6 +703,7 @@ async def detach_knowledge_base(
             knowledge_base_id
         ),
         user_id=current_user.id,
+        is_admin=True,
     )
 
     return None

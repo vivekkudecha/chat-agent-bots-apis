@@ -1,3 +1,5 @@
+import uuid
+
 from pydantic import SecretStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,6 +8,7 @@ from app.core.exceptions import (
     BadRequestException,
     EmailAlreadyExistsException,
     InvalidCredentialsException,
+    UserNotFoundException,
 )
 from app.core.security import (
     hash_password,
@@ -122,3 +125,103 @@ class UserService:
         except Exception:
             await db.rollback()
             raise
+
+    # =====================================================
+    # LIST USERS (ADMIN)
+    # =====================================================
+
+    @staticmethod
+    async def list_users(
+        db: AsyncSession,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[User], int]:
+
+        offset = (page - 1) * page_size
+        return await UserRepository.list(
+            db,
+            offset=offset,
+            limit=page_size,
+        )
+
+    # =====================================================
+    # GET USER BY ID (ADMIN)
+    # =====================================================
+
+    @staticmethod
+    async def get_by_id(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+    ) -> User:
+
+        user = await UserRepository.get_by_id(
+            db,
+            user_id,
+        )
+        if not user:
+            raise UserNotFoundException()
+        return user
+
+    # =====================================================
+    # ADMIN UPDATE USER
+    # =====================================================
+
+    @staticmethod
+    async def admin_update_user(
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        role: str | None = None,
+        is_active: bool | None = None,
+        is_superuser: bool | None = None,
+    ) -> User:
+
+        user = await UserRepository.get_by_id(
+            db,
+            user_id,
+        )
+        if not user:
+            raise UserNotFoundException()
+
+        updates = {}
+        if role is not None:
+            updates["role"] = role
+        if is_active is not None:
+            updates["is_active"] = is_active
+        if is_superuser is not None:
+            updates["is_superuser"] = is_superuser
+
+        if updates:
+            user = await UserRepository.update(
+                db,
+                user,
+                **updates,
+            )
+            await db.commit()
+            await db.refresh(user)
+
+        return user
+
+    # =====================================================
+    # DELETE USER (ADMIN)
+    # =====================================================
+
+    @staticmethod
+    async def delete_user(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+    ) -> None:
+
+        user = await UserRepository.get_by_id(
+            db,
+            user_id,
+        )
+        if not user:
+            raise UserNotFoundException()
+
+        await UserRepository.delete(
+            db,
+            user,
+        )
+        await db.commit()

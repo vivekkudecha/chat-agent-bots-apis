@@ -35,8 +35,8 @@ class ConversationService:
         title: str | None = None,
         metadata: dict[str, Any] | None = None,
     ):
-        # Verify bot ownership.
-        bot = await BotRepository.get_owned_bot(
+        # Verify bot availability.
+        bot = await BotRepository.get_available_bot(
             db,
             bot_id=bot_id,
             user_id=user_id,

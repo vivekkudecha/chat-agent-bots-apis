@@ -34,6 +34,10 @@ class UserCreate(UserBase):
         min_length=8,
         max_length=128,
     )
+    role: str = Field(
+        default="user",
+        pattern="^(user|admin)$",
+    )
 
 
 # ---------------------------------------------------------
@@ -102,6 +106,17 @@ class UserAdminUpdate(BaseModel):
     is_active: bool | None = None
 
     is_superuser: bool | None = None
+
+
+# ---------------------------------------------------------
+# User List Response
+# ---------------------------------------------------------
+
+class UserListResponse(BaseModel):
+    items: list[UserResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 # ---------------------------------------------------------

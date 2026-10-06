@@ -57,6 +57,8 @@ class AuthService:
             data.password.get_secret_value()
         )
 
+        role = getattr(data, "role", "user") or "user"
+
         try:
 
             user = await UserRepository.create(
@@ -64,7 +66,7 @@ class AuthService:
                 name=data.name.strip(),
                 email=email,
                 password_hash=password_hash,
-                role="user",
+                role=role,
             )
 
             await db.commit()

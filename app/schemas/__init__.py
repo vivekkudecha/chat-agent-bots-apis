@@ -10,6 +10,7 @@ from app.schemas.users import (
     UserCreate,
     UserLogin,
     UserResponse,
+    UserListResponse,
     UserUpdate,
     UserUpdateRequest,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "TokenResponse",
     "RefreshTokenRequest",
     "UserResponse",
+    "UserListResponse",
     "UserAdminUpdate",
     "PasswordChangeRequest",
     "RegisterRequest",

@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -105,6 +105,44 @@ class BotRepository:
         return result.scalar_one_or_none()
 
     # -----------------------------------------------------
+    # Get Available Bot
+    # -----------------------------------------------------
+
+    @staticmethod
+    async def get_available_bot(
+        db: AsyncSession,
+        *,
+        bot_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+        is_admin: bool = False,
+    ) -> Bot | None:
+
+        result = await db.execute(
+            select(Bot)
+            .options(
+                selectinload(Bot.versions)
+            )
+            .where(
+                Bot.id == bot_id
+            )
+        )
+
+        bot = result.scalar_one_or_none()
+        if not bot:
+            return None
+
+        if is_admin:
+            return bot
+
+        if bot.status == "archived":
+            return None
+
+        if bot.visibility in ["public", "organization"] or bot.user_id == user_id:
+            return bot
+
+        return None
+
+    # -----------------------------------------------------
     # Get by Slug
     # -----------------------------------------------------
 
@@ -169,6 +207,56 @@ class BotRepository:
         bots = list(
             result.scalars().all()
         )
+
+        return bots, total
+
+    # -----------------------------------------------------
+    # List Available Bots
+    # -----------------------------------------------------
+
+    @staticmethod
+    async def list_available(
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID | None = None,
+        is_admin: bool = False,
+        offset: int = 0,
+        limit: int = 20,
+        status: str | None = None,
+    ) -> tuple[list[Bot], int]:
+
+        conditions = []
+
+        if not is_admin:
+            conditions.append(Bot.status != "archived")
+            conditions.append(
+                or_(
+                    Bot.visibility.in_(["public", "organization"]),
+                    Bot.user_id == user_id,
+                )
+            )
+        else:
+            if status:
+                conditions.append(Bot.status == status)
+
+        count_stmt = select(func.count(Bot.id))
+        if conditions:
+            count_stmt = count_stmt.where(*conditions)
+        count_result = await db.execute(count_stmt)
+        total = count_result.scalar_one()
+
+        stmt = (
+            select(Bot)
+            .options(selectinload(Bot.versions))
+            .order_by(Bot.updated_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        if conditions:
+            stmt = stmt.where(*conditions)
+
+        result = await db.execute(stmt)
+        bots = list(result.scalars().all())
 
         return bots, total
 

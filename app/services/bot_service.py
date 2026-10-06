@@ -134,14 +134,17 @@ class BotService:
         *,
         bot_id: uuid.UUID,
         user_id: uuid.UUID,
+        is_admin: bool = False,
     ) -> Bot:
 
-        bot = await BotRepository.get_with_versions(
+        bot = await BotRepository.get_available_bot(
             db,
             bot_id=bot_id,
+            user_id=user_id,
+            is_admin=is_admin,
         )
 
-        if not bot or bot.user_id != user_id:
+        if not bot:
             raise BotNotFoundException()
 
         return bot
@@ -155,15 +158,17 @@ class BotService:
         db: AsyncSession,
         *,
         user_id: uuid.UUID,
+        is_admin: bool = False,
         page: int = 1,
         page_size: int = 20,
     ) -> BotListResult:
 
         offset = (page - 1) * page_size
 
-        items, total = await BotRepository.list_by_user(
+        items, total = await BotRepository.list_available(
             db,
             user_id=user_id,
+            is_admin=is_admin,
             offset=offset,
             limit=page_size,
         )
@@ -183,6 +188,7 @@ class BotService:
         *,
         bot_id: uuid.UUID,
         user_id: uuid.UUID,
+        is_admin: bool = False,
         **update_data,
     ) -> Bot:
 
@@ -190,6 +196,7 @@ class BotService:
             db,
             bot_id=bot_id,
             user_id=user_id,
+            is_admin=is_admin,
         )
 
         protected_fields = {
@@ -265,13 +272,20 @@ class BotService:
         *,
         bot_id: uuid.UUID,
         user_id: uuid.UUID,
+        is_admin: bool = False,
     ) -> None:
 
-        bot = await BotRepository.get_owned_bot(
-            db,
-            bot_id=bot_id,
-            user_id=user_id,
-        )
+        if is_admin:
+            bot = await BotRepository.get_by_id(
+                db,
+                bot_id=bot_id,
+            )
+        else:
+            bot = await BotRepository.get_owned_bot(
+                db,
+                bot_id=bot_id,
+                user_id=user_id,
+            )
 
         if not bot:
             raise BotNotFoundException()
@@ -303,12 +317,14 @@ class BotService:
         *,
         bot_id: uuid.UUID,
         user_id: uuid.UUID,
+        is_admin: bool = False,
     ) -> BotVersion:
 
         bot = await self.get(
             db,
             bot_id=bot_id,
             user_id=user_id,
+            is_admin=is_admin,
         )
 
         latest_version = await BotRepository.get_latest_version(
@@ -387,22 +403,35 @@ class BotService:
         bot_id: uuid.UUID,
         knowledge_base_id: uuid.UUID,
         user_id: uuid.UUID,
+        is_admin: bool = False,
     ) -> None:
 
-        bot = await BotRepository.get_owned_bot(
-            db,
-            bot_id=bot_id,
-            user_id=user_id,
-        )
+        if is_admin:
+            bot = await BotRepository.get_by_id(
+                db,
+                bot_id=bot_id,
+            )
+        else:
+            bot = await BotRepository.get_owned_bot(
+                db,
+                bot_id=bot_id,
+                user_id=user_id,
+            )
 
         if not bot:
             raise BotNotFoundException()
 
-        knowledge_base = await KnowledgeRepository.get_owned(
-            db,
-            knowledge_base_id=knowledge_base_id,
-            user_id=user_id,
-        )
+        if is_admin:
+            knowledge_base = await KnowledgeRepository.get_by_id(
+                db,
+                knowledge_base_id=knowledge_base_id,
+            )
+        else:
+            knowledge_base = await KnowledgeRepository.get_owned(
+                db,
+                knowledge_base_id=knowledge_base_id,
+                user_id=user_id,
+            )
 
         if not knowledge_base:
             raise KnowledgeBaseNotFoundException()
@@ -445,22 +474,35 @@ class BotService:
         bot_id: uuid.UUID,
         knowledge_base_id: uuid.UUID,
         user_id: uuid.UUID,
+        is_admin: bool = False,
     ) -> None:
 
-        bot = await BotRepository.get_owned_bot(
-            db,
-            bot_id=bot_id,
-            user_id=user_id,
-        )
+        if is_admin:
+            bot = await BotRepository.get_by_id(
+                db,
+                bot_id=bot_id,
+            )
+        else:
+            bot = await BotRepository.get_owned_bot(
+                db,
+                bot_id=bot_id,
+                user_id=user_id,
+            )
 
         if not bot:
             raise BotNotFoundException()
 
-        knowledge_base = await KnowledgeRepository.get_owned(
-            db,
-            knowledge_base_id=knowledge_base_id,
-            user_id=user_id,
-        )
+        if is_admin:
+            knowledge_base = await KnowledgeRepository.get_by_id(
+                db,
+                knowledge_base_id=knowledge_base_id,
+            )
+        else:
+            knowledge_base = await KnowledgeRepository.get_owned(
+                db,
+                knowledge_base_id=knowledge_base_id,
+                user_id=user_id,
+            )
 
         if not knowledge_base:
             raise KnowledgeBaseNotFoundException()

@@ -185,3 +185,47 @@ async def get_current_user(
         )
 
     return user
+
+
+# =========================================================
+# REQUIRE ADMIN / RBAC
+# =========================================================
+
+async def require_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+
+    if (
+        current_user.role != "admin"
+        and not current_user.is_superuser
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required.",
+        )
+
+    return current_user
+
+
+def require_role(*roles: str):
+
+    async def role_checker(
+        current_user: User = Depends(get_current_user),
+    ) -> User:
+
+        if (
+            current_user.role not in roles
+            and not current_user.is_superuser
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access forbidden: role must be one of {roles}.",
+            )
+
+        return current_user
+
+    return role_checker
+
+
+get_current_admin_user = require_admin
+get_current_admin = require_admin

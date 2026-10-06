@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------
     # Language & Internationalization
     # ---------------------------------------------------------
-    DEFAULT_LANGUAGE: str = "auto"
+    DEFAULT_LANGUAGE: str = "en"
 
     QDRANT_TEXT_TOKENIZER: str = "multilingual"
 

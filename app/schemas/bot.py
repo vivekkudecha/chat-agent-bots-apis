@@ -42,7 +42,7 @@ class BotBase(BaseModel):
 
     description: str | None = None
 
-    visibility: BotVisibility = "private"
+    visibility: BotVisibility = "public"
 
     avatar_url: str | None = None
 

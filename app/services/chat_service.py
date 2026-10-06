@@ -176,7 +176,7 @@ class ChatService:
         # Bot
         # ---------------------------------------------
 
-        bot = await BotRepository.get_owned_bot(
+        bot = await BotRepository.get_available_bot(
             db,
             bot_id=bot_id,
             user_id=user_id,
