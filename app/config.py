@@ -59,7 +59,7 @@ class Settings(BaseSettings):
 
     VLLM_API_KEY: str = "local-vllm"
 
-    VLLM_DEFAULT_MODEL: str = "google/gemma-3-27b-it"
+    VLLM_DEFAULT_MODEL: str = "gemma4:e4b"
 
     VLLM_TIMEOUT: int = 120
 

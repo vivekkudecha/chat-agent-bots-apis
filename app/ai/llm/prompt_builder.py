@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import re
+import re, json
 from typing import Any, TYPE_CHECKING
 
 from app.config import settings
@@ -330,9 +330,22 @@ Follow the platform rules before any bot-specific instructions:
             for tr in tool_results:
                 t_name = tr.get("name", "tool")
                 t_res = tr.get("result", {})
-                results_sections.append(
-                    f"Tool: {t_name}\nData: {t_res}"
-                )
+                if t_name == "web_search" and isinstance(t_res, dict):
+                    search_items = t_res.get("results", [])
+                    if search_items:
+                        items_text = []
+                        for idx, item in enumerate(search_items, 1):
+                            title = item.get("title", "").strip()
+                            snippet = item.get("snippet", "").strip()
+                            url = item.get("url", "").strip()
+                            items_text.append(f"[{idx}] {title}\nSummary: {snippet}\nSource URL: {url}")
+                        results_sections.append("Web Search Findings:\n" + "\n\n".join(items_text))
+                    else:
+                        results_sections.append("Web Search Findings: No relevant public web results found.")
+                else:
+                    results_sections.append(
+                        f"Tool {t_name} Result:\n{json.dumps(t_res, indent=2) if isinstance(t_res, (dict, list)) else str(t_res)}"
+                    )
             tool_content = "\n\n---\n\n".join(results_sections)
             messages.append(
                 {
@@ -342,10 +355,9 @@ Follow the platform rules before any bot-specific instructions:
                         "The following external data was retrieved from tool executions for this turn:\n\n"
                         f"<tool_results>\n{tool_content}\n</tool_results>\n\n"
                         "CRITICAL INSTRUCTIONS:\n"
-                        "1. Do NOT emit JSON or function calls.\n"
-                        "2. Respond directly in natural, fluent English using the above information.\n"
-                        "3. Summarize and explain the relevant news or facts clearly to the user.\n"
-                        "4. Include key source URLs or references if available."
+                        "1. Respond directly in natural, fluent English using the above information. Do NOT emit JSON, function calls, or robotic intros like 'Based on the external tool execution data'.\n"
+                        "2. Strictly limit your response to facts relevant to the user query and your bot configuration. Do not answer random off-topic questions or speculate beyond verifiable facts.\n"
+                        "3. Seamlessly cite key source URLs or references if available."
                     ),
                 }
             )

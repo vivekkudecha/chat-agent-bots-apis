@@ -348,7 +348,7 @@ class OpenAICompatibleProvider(LLMProvider):
                             },
                         }
                     )
-            elif content:
+            elif content and tools:
                 # Fallback: Extract tool calls from text if model outputs JSON in content
                 extracted_calls = self._extract_tool_calls_from_content(content, tools)
                 if extracted_calls:

@@ -53,18 +53,45 @@ class WebSearchTool(BaseTool):
         """
         Executes live web search using available provider backends.
         """
+        import re
+
         # Handle cases where arguments are passed as a JSON string
         if isinstance(arguments, str):
+            cleaned_str = arguments.strip()
+            if cleaned_str.startswith("```"):
+                cleaned_str = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned_str)
+                cleaned_str = re.sub(r"\s*```$", "", cleaned_str).strip()
+            cleaned_str = re.sub(r'""+', '"', cleaned_str)
             try:
-                parsed_args = json.loads(arguments)
+                parsed_args = json.loads(cleaned_str)
             except Exception:
-                parsed_args = {"query": arguments}
+                parsed_args = {"query": cleaned_str}
         elif isinstance(arguments, dict):
-            parsed_args = arguments
+            parsed_args = dict(arguments)
         else:
             parsed_args = {}
 
-        query = (parsed_args.get("query") or parsed_args.get("q") or "").strip()
+        # Unnest if parameters are wrapped in a nested dictionary
+        if "parameters" in parsed_args and isinstance(parsed_args["parameters"], dict):
+            parsed_args = parsed_args["parameters"]
+        elif "arguments" in parsed_args and isinstance(parsed_args["arguments"], dict):
+            parsed_args = parsed_args["arguments"]
+        elif "args" in parsed_args and isinstance(parsed_args["args"], dict):
+            parsed_args = parsed_args["args"]
+
+        raw_query = (
+            parsed_args.get("query")
+            or parsed_args.get("search_query")
+            or parsed_args.get("q")
+            or parsed_args.get("input")
+            or ""
+        )
+        if isinstance(raw_query, str):
+            query = raw_query.strip().strip('"\'').strip()
+        else:
+            query = str(raw_query).strip()
+
+        query = re.sub(r'""+', '"', query)
         if not query:
             return {
                 "query": "",

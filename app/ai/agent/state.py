@@ -6,6 +6,7 @@ from typing import Any
 
 class RouteType(str, Enum):
     DIRECT = "direct"
+    MEMORY = "memory"
     RAG = "rag"
     TOOL = "tool"
 
@@ -23,6 +24,9 @@ class AgentState:
 
     route: RouteType = RouteType.DIRECT
     route_reason: str = ""
+    resolved_query: str = ""
+    selected_tool: str | None = None
+    tool_args: dict[str, Any] = field(default_factory=dict)
 
     has_kb: bool = False
     available_tools: list[dict[str, Any]] = field(default_factory=list)

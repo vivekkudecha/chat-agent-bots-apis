@@ -9,9 +9,12 @@ Contains all AI-specific engines, workflows, and subsystems:
 
 from app.ai.agent import (
     AgentRouter,
+    AgentSupervisor,
+    SemanticSupervisor,
     ChatAgentGraph,
     ChatAgentState,
     RouteType,
+    RoutingDecision,
     ToolRegistry,
 )
 from app.ai.guardrails import (
@@ -54,6 +57,8 @@ __all__ = [
     "ChatAgentGraph",
     "ChatAgentState",
     "AgentRouter",
+    "AgentSupervisor",
+    "RoutingDecision",
     "RouteType",
     "ToolRegistry",
     # Memory
