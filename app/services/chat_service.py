@@ -451,6 +451,61 @@ class ChatService:
         )
 
         # ---------------------------------------------
+        # Sources (Distinct by Document / Reference File / Web Search)
+        # ---------------------------------------------
+
+        sources = []
+        if safe_retrieval and safe_retrieval.chunks:
+            distinct_sources = (
+                safe_retrieval.get_distinct_sources()
+            )
+            sources = [
+                ChatSource(
+                    document_id=src.document_id,
+                    knowledge_base_id=(
+                        src.knowledge_base_id
+                    ),
+                    file_name=src.file_name,
+                    page=src.page,
+                    score=src.score,
+                    pages=src.pages,
+                    chunk_count=src.chunk_count,
+                    content_preview=(
+                        src.content_preview
+                    ),
+                    metadata=src.metadata,
+                )
+                for src in distinct_sources
+            ]
+
+        # Append web search sources from graph execution if present
+        for item in graph_output.get("distinct_sources", []):
+            if isinstance(item, dict) and item.get("metadata", {}).get("source_type") == "web_search":
+                sources.append(
+                    ChatSource(
+                        document_id=item.get("document_id") or uuid.uuid4(),
+                        knowledge_base_id=None,
+                        file_name=item.get("file_name") or "Web Search",
+                        page=None,
+                        score=item.get("score", 1.0),
+                        pages=[],
+                        chunk_count=1,
+                        content_preview=item.get("content_preview"),
+                        metadata=item.get("metadata", {}),
+                    )
+                )
+
+        serialized_sources = [
+            {
+                "title": s.file_name,
+                "url": (s.metadata or {}).get("url"),
+                "snippet": s.content_preview,
+                "source_type": (s.metadata or {}).get("source_type", "knowledge_base"),
+            }
+            for s in sources
+        ]
+
+        # ---------------------------------------------
         # Save assistant message
         # ---------------------------------------------
 
@@ -479,20 +534,14 @@ class ChatService:
                     "finish_reason": (
                         response.finish_reason
                     ),
-                    "source_count": (
-                        len(
-                            safe_retrieval.chunks
-                        )
-                        if (
-                            safe_retrieval
-                            and safe_retrieval.chunks
-                        )
-                        else 0
-                    ),
+                    "source_count": len(sources),
                     "guardrail_warnings": (
                         output_evaluation
                         .warnings
                     ),
+                    "tool_calls": graph_output.get("tool_calls", []),
+                    "tool_results_count": len(graph_output.get("tool_results", [])),
+                    "sources": serialized_sources,
                 },
             )
         )
@@ -541,22 +590,14 @@ class ChatService:
             status="success",
             metadata={
                 "model": model.model_key,
-                "source_count": (
-                    len(
-                        safe_retrieval.chunks
-                    )
-                    if (
-                        safe_retrieval
-                        and safe_retrieval.chunks
-                    )
-                    else 0
-                ),
+                "source_count": len(sources),
                 "input_guardrail_count": len(
                     input_evaluation.executions
                 ),
                 "output_guardrail_count": len(
                     output_evaluation.executions
                 ),
+                "tool_calls_count": len(graph_output.get("tool_calls", [])),
             },
         )
 
@@ -574,51 +615,6 @@ class ChatService:
             except Exception:
                 # If Celery worker/broker is unreachable, fail silently
                 pass
-
-        # ---------------------------------------------
-        # Sources (Distinct by Document / Reference File / Web Search)
-        # ---------------------------------------------
-
-        sources = []
-        if safe_retrieval and safe_retrieval.chunks:
-            distinct_sources = (
-                safe_retrieval.get_distinct_sources()
-            )
-            sources = [
-                ChatSource(
-                    document_id=src.document_id,
-                    knowledge_base_id=(
-                        src.knowledge_base_id
-                    ),
-                    file_name=src.file_name,
-                    page=src.page,
-                    score=src.score,
-                    pages=src.pages,
-                    chunk_count=src.chunk_count,
-                    content_preview=(
-                        src.content_preview
-                    ),
-                    metadata=src.metadata,
-                )
-                for src in distinct_sources
-            ]
-
-        # Append web search sources from graph execution if present
-        for item in graph_output.get("distinct_sources", []):
-            if isinstance(item, dict) and item.get("metadata", {}).get("source_type") == "web_search":
-                sources.append(
-                    ChatSource(
-                        document_id=item.get("document_id") or uuid.uuid4(),
-                        knowledge_base_id=None,
-                        file_name=item.get("file_name") or "Web Search",
-                        page=None,
-                        score=item.get("score", 1.0),
-                        pages=[],
-                        chunk_count=1,
-                        content_preview=item.get("content_preview"),
-                        metadata=item.get("metadata", {}),
-                    )
-                )
 
         warnings = [
             *input_evaluation.warnings,

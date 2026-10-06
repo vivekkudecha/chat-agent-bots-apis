@@ -26,6 +26,7 @@ class AgentRouter:
         r"ok|okay|k|got\s+it|understood|cool|great|awesome|perfect|sure|yes|no|yep|nope|alright|fine|"
         r"bye|goodbye|cya|see\s+ya|see\s+you|take\s+care|who\s+are\s+you|how\s+are\s+you|"
         r"what\s+is\s+your\s+name|what\s+can\s+you\s+do|"
+        r"what(?:\'s|s|\s+is)\s+today(?:'s)?(?:\s+date)?|today(?:'s)?\s+date|what\s+date\s+is\s+today|what\s+is\s+the\s+date|what\s+day\s+is\s+it|what\s+time\s+is\s+it|current\s+(?:date|time|year)|what\s+year\s+is\s+(?:this|it)|"
         # Hindi / Devanagari
         r"नमस्ते|नमस्कार|धन्यवाद|अलविदा|शुक्रिया|हाँ|नहीं|ठीक\s+है|आप\s+कैसे\s+हैं|"
         # Gujarati
@@ -44,19 +45,19 @@ class AgentRouter:
         re.IGNORECASE | re.UNICODE,
     )
 
-    ROUTER_SYSTEM_PROMPT = """You are an intent routing supervisor for a multilingual AI agent.
-Analyze the user's latest message in ANY language (English, Hindi, Spanish, French, German, Gujarati, Chinese, Arabic, Japanese, etc.) and classify what is needed:
+    ROUTER_SYSTEM_PROMPT = """You are an intent routing supervisor for an AI agent.
+Analyze the user's latest message and recent conversation context to classify what is needed:
 
 Available choices:
-- "DIRECT": Greetings, pleasantries, small talk, general conversation, or meta-questions not requiring external documents or tools.
-- "RAG": When the user asks for specific company policies, guidelines, documents, factual information, or domain rules that should be searched in the knowledge base.
-- "TOOL": When the user specifically requests an action, computation, web search, current news, live facts, or external data lookup.
+- "DIRECT": Greetings, general conversation, date/time inquiries, or follow-up questions/clarifications that can be answered directly using the existing conversation context without fetching external data.
+- "RAG": When the user asks for specific company policies, internal documents, or domain rules that should be searched in the knowledge base.
+- "TOOL": When the user specifically requests an action, web search, current news, live facts, or external data lookup not already covered in the conversation.
 
 Respond with ONLY one word: DIRECT, RAG, or TOOL."""
 
     # Pattern for quick web search intent detection
     SEARCH_INTENT_PATTERN = re.compile(
-        r"(?:\b(?:search\s+(?:the\s+web|online|for|google)|look\s+up|latest\s+news|current\s+events|who\s+won|stock\s+price|live\s+score|weather\s+in|what\s+(?:happened|happned)\s+(?:in|to|at|today|recently)|what(?:\'s|\s+is)\s+happening|breaking\s+news|today(?:'s)?\s+news|news\s+(?:today|about|in|on))\b)",
+        r"(?:\b(?:search\s+(?:the\s+web|online|for|google)|look\s+up|latest\s+(?:movies|films|news|songs|releases)|current\s+events|who\s+won|stock\s+price|live\s+score|weather\s+in|what\s+(?:happened|happned)\s+(?:in|to|at|today|recently)|what(?:\'s|\s+is)\s+happening|breaking\s+news|today(?:'s)?\s+news|news\s+(?:today|about|in|on)|movies\s+(?:of\s+this\s+year|released\s+this\s+year|in\s+\d{4})|(?:new|top|best)\s+movies\s+of\s+this\s+year)\b)",
         re.IGNORECASE,
     )
 
@@ -70,9 +71,10 @@ Respond with ONLY one word: DIRECT, RAG, or TOOL."""
         has_kb: bool,
         available_tools: list[dict[str, Any]] | None = None,
         model: str = "",
+        history: list[Any] | None = None,
     ) -> RouteType:
         """
-        Determines the routing decision for the current turn.
+        Determines the routing decision for the current turn with conversation context awareness.
         """
         cleaned = message.strip()
         if not cleaned:
@@ -99,9 +101,23 @@ Respond with ONLY one word: DIRECT, RAG, or TOOL."""
         # If tools or KBs are present, use the LLM intent router for adaptive routing
         if model:
             try:
+                user_msg_parts: list[str] = []
+                if history:
+                    recent_hist: list[str] = []
+                    for msg in history[-3:]:
+                        r = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else "")
+                        c = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else "")
+                        if c and not c.strip().startswith("{"):
+                            recent_hist.append(f"{r.capitalize()}: {c[:140]}")
+                    if recent_hist:
+                        user_msg_parts.append("Recent conversation context:\n" + "\n".join(recent_hist))
+
+                user_msg_parts.append(f"User query: {cleaned}")
+                user_prompt_text = "\n\n".join(user_msg_parts)
+
                 router_messages = [
                     {"role": "system", "content": self.ROUTER_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"User query: {cleaned}"},
+                    {"role": "user", "content": user_prompt_text},
                 ]
 
                 decision_response = await self.llm.chat(
@@ -113,6 +129,10 @@ Respond with ONLY one word: DIRECT, RAG, or TOOL."""
 
                 decision = decision_response.content.strip().upper()
 
+                if "DIRECT" in decision:
+                    logger.info("AgentRouter: LLM routed '%s' -> DIRECT", cleaned[:40])
+                    return RouteType.DIRECT
+
                 if "RAG" in decision and has_kb:
                     logger.info("AgentRouter: LLM routed '%s' -> RAG", cleaned[:40])
                     return RouteType.RAG
@@ -120,10 +140,6 @@ Respond with ONLY one word: DIRECT, RAG, or TOOL."""
                 if "TOOL" in decision and available_tools:
                     logger.info("AgentRouter: LLM routed '%s' -> TOOL", cleaned[:40])
                     return RouteType.TOOL
-
-                if "DIRECT" in decision:
-                    logger.info("AgentRouter: LLM routed '%s' -> DIRECT", cleaned[:40])
-                    return RouteType.DIRECT
 
             except Exception as exc:
                 logger.warning("AgentRouter: LLM routing failed, falling back to default heuristic: %s", exc)

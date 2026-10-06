@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Literal, TypedDict, TYPE_CHECKING
 import uuid
 
@@ -139,6 +140,7 @@ class ChatAgentGraph:
             has_kb=state.get("has_kb", False),
             available_tools=state.get("available_tools", []),
             model=state.get("model_key"),
+            history=state.get("history", []),
         )
         logger.info("LangGraph router decided: route=%s", route.value)
         return {
@@ -213,9 +215,85 @@ class ChatAgentGraph:
             logger.exception("Error in LangGraph retrieve_node: %s", exc)
             return {"retrieval": None, "distinct_sources": []}
 
+    async def _resolve_search_query(
+        self,
+        query: str,
+        history: list[Any] | None,
+        model: str,
+    ) -> str:
+        """
+        Resolves anaphoric references, ambiguous follow-ups, and relative temporal expressions
+        (e.g., 'this year' -> 2026, 'today' -> date) using live time and conversation context.
+        """
+        cleaned = query.strip()
+        if not cleaned:
+            return ""
+
+        from datetime import datetime, timezone
+        now_utc = datetime.now(timezone.utc)
+        year_str = str(now_utc.year)
+        date_str = now_utc.strftime("%A, %B %d, %Y")
+
+        temporal_words = {"today", "this year", "current year", "recent", "latest", "yesterday", "tomorrow", "this month"}
+        has_temporal = any(tw in cleaned.lower() for tw in temporal_words)
+
+        pronouns = {"it", "that", "this", "they", "them", "these", "those", "he", "she", "his", "her", "there", "the"}
+        words = set(re.findall(r"\b[a-zA-Z]+\b", cleaned.lower()))
+        is_short = len(words) < 6
+        has_pronoun = bool(words & pronouns)
+
+        # If query has no pronouns, no temporal ambiguity, and is self-contained with no history, skip LLM
+        if not history and not (has_temporal or has_pronoun or is_short):
+            return cleaned
+
+        recent_turns: list[str] = []
+        if history:
+            for msg in history[-4:]:
+                role = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else "unknown")
+                content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else "")
+                if content and not OpenAICompatibleProvider._extract_tool_calls_from_content(content):
+                    recent_turns.append(f"{role.capitalize()}: {content[:150]}")
+
+        history_context = "\n".join(recent_turns) if recent_turns else "None (New query)"
+
+        prompt = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are a high-precision search query optimizer. The real-world current date is {date_str} (Current Year: {year_str}).\n"
+                    "Your task is to produce ONLY a standalone, concise, and highly effective web search query string.\n"
+                    "Guidelines:\n"
+                    f"1. Resolve relative temporal terms: replace 'this year' with '{year_str}', 'today' with '{now_utc.strftime('%B %d %Y')}', etc.\n"
+                    "2. Incorporate key subjects, names, or entities from recent conversation context if the query is a follow-up.\n"
+                    "3. If the query is already specific and standalone, keep it clean and direct.\n"
+                    "4. Output ONLY the search query text. Do NOT explain or include quotes."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Recent Conversation:\n{history_context}\n\nUser Query: {cleaned}\n\nStandalone Search Query:",
+            },
+        ]
+
+        try:
+            res = await self.llm.chat(
+                messages=prompt,
+                model=model,
+                temperature=0.0,
+                max_tokens=35,
+            )
+            reformulated = res.content.strip().strip("\"'").strip()
+            if reformulated and len(reformulated) > 2:
+                logger.info("Contextualized search query: '%s' -> '%s'", cleaned, reformulated)
+                return reformulated
+        except Exception as exc:
+            logger.warning("Query contextualization failed, using raw query: %s", exc)
+
+        return cleaned
+
     async def _tool_node(self, state: ChatAgentState) -> dict[str, Any]:
         """
-        Prepares tools or executes tool calls for tool calling flows.
+        Prepares tools or executes tool calls for tool calling flows with conversation context awareness.
         """
         tool_results = list(state.get("tool_results") or [])
         tool_calls = list(state.get("tool_calls") or [])
@@ -226,12 +304,17 @@ class ChatAgentGraph:
             for t in available_tools
         )
 
-        # If routed to TOOL and web search is enabled, execute web search for query
+        # If routed to TOOL and web search is enabled, execute web search with contextualized query
         if has_web_search and not tool_results:
-            query = state.get("query", "")
+            raw_query = state.get("query", "")
+            resolved_query = await self._resolve_search_query(
+                raw_query,
+                state.get("history", []),
+                state.get("model_key", ""),
+            )
             search_result = await self.tool_registry.execute_tool(
                 "web_search",
-                {"query": query},
+                {"query": resolved_query},
                 context={
                     "user_id": state.get("user_id"),
                     "bot_id": state.get("bot_id"),
@@ -241,13 +324,13 @@ class ChatAgentGraph:
             tool_calls.append(
                 {
                     "name": "web_search",
-                    "arguments": {"query": query},
+                    "arguments": {"query": resolved_query},
                 }
             )
             tool_results.append(
                 {
                     "name": "web_search",
-                    "arguments": {"query": query},
+                    "arguments": {"query": resolved_query},
                     "result": search_result,
                 }
             )

@@ -112,6 +112,15 @@ class ConversationSummarizer:
         for m in messages:
             role = m.role.capitalize()
             content = (m.content or "").strip()
+            if role.lower() == "assistant" and content.startswith("{"):
+                from app.ai.llm.provider import OpenAICompatibleProvider
+                extracted = OpenAICompatibleProvider._extract_tool_calls_from_content(content)
+                if extracted:
+                    fn = extracted[0].get("function", {})
+                    fn_name = fn.get("name", "tool")
+                    args = fn.get("arguments", {})
+                    q = args.get("query") or args.get("q") or ""
+                    content = f"[Searched web for: '{q}']" if q else f"[Used tool: {fn_name}]"
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
 
