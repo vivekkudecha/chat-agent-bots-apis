@@ -77,6 +77,7 @@ Security rules:
         context_window: int | None = None,
         max_generation_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_results: list[dict[str, Any]] | None = None,
     ) -> BuiltPrompt:
         return self._build_internal(
             bot_version=bot_version,
@@ -87,6 +88,7 @@ Security rules:
             context_window=context_window,
             max_generation_tokens=max_generation_tokens,
             tools=tools,
+            tool_results=tool_results,
         )
 
     # =====================================================
@@ -104,6 +106,7 @@ Security rules:
         context_window: int | None = None,
         max_generation_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_results: list[dict[str, Any]] | None = None,
     ) -> BuiltPrompt:
         return self._build_internal(
             bot_version=bot_version,
@@ -114,6 +117,7 @@ Security rules:
             context_window=context_window,
             max_generation_tokens=max_generation_tokens,
             tools=tools,
+            tool_results=tool_results,
         )
 
     # =====================================================
@@ -131,6 +135,7 @@ Security rules:
         context_window: int | None = None,
         max_generation_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_results: list[dict[str, Any]] | None = None,
     ) -> BuiltPrompt:
 
         # ---------------------------------------------
@@ -244,6 +249,53 @@ Security rules:
                         "<knowledge>\n"
                         f"{context_text}\n"
                         "</knowledge>"
+                    ),
+                }
+            )
+
+        # ---------------------------------------------
+        # AVAILABLE TOOLS
+        # ---------------------------------------------
+        if tools:
+            tool_descs = []
+            for t in tools:
+                fn = t.get("function", {})
+                t_name = fn.get("name", "unknown")
+                t_desc = fn.get("description", "")
+                tool_descs.append(f"- {t_name}: {t_desc}")
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "AVAILABLE TOOLS\n\n"
+                        "You have access to the following external tools:\n"
+                        + "\n".join(tool_descs)
+                        + "\n\nInvoke tools when the user's request requires live, external, or up-to-date data."
+                    ),
+                }
+            )
+
+        # ---------------------------------------------
+        # TOOL EXECUTION RESULTS
+        # ---------------------------------------------
+        if tool_results:
+            results_sections = []
+            for tr in tool_results:
+                t_name = tr.get("name", "tool")
+                t_res = tr.get("result", {})
+                results_sections.append(
+                    f"Tool: {t_name}\nData: {t_res}"
+                )
+            tool_content = "\n\n---\n\n".join(results_sections)
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "EXTERNAL TOOL EXECUTION DATA\n\n"
+                        "The following external data was retrieved from tool executions for this turn:\n\n"
+                        f"<tool_results>\n{tool_content}\n</tool_results>\n\n"
+                        "Use these external results to provide a comprehensive, accurate, up-to-date answer. "
+                        "Cite reference URLs or sources when relevant. Ensure your response is strictly in English."
                     ),
                 }
             )

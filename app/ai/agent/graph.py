@@ -59,6 +59,7 @@ class ChatAgentState(TypedDict, total=False):
     # Tool calls & results
     tool_calls: list[dict[str, Any]]
     tool_results: list[dict[str, Any]]
+    enable_web_search: bool
 
     # Output & usage
     response: LLMResponse | None
@@ -216,19 +217,62 @@ class ChatAgentGraph:
         """
         Prepares tools or executes tool calls for tool calling flows.
         """
+        tool_results = list(state.get("tool_results") or [])
+        tool_calls = list(state.get("tool_calls") or [])
+
+        available_tools = state.get("available_tools") or []
+        has_web_search = any(
+            t.get("function", {}).get("name") == "web_search"
+            for t in available_tools
+        )
+
+        # If routed to TOOL and web search is enabled, execute web search for query
+        if has_web_search and not tool_results:
+            query = state.get("query", "")
+            search_result = await self.tool_registry.execute_tool(
+                "web_search",
+                {"query": query},
+                context={
+                    "user_id": state.get("user_id"),
+                    "bot_id": state.get("bot_id"),
+                    "conversation_id": state.get("conversation_id"),
+                },
+            )
+            tool_calls.append(
+                {
+                    "name": "web_search",
+                    "arguments": {"query": query},
+                }
+            )
+            tool_results.append(
+                {
+                    "name": "web_search",
+                    "arguments": {"query": query},
+                    "result": search_result,
+                }
+            )
+
         return {
-            "tool_calls": state.get("tool_calls", []),
-            "tool_results": state.get("tool_results", []),
+            "tool_calls": tool_calls,
+            "tool_results": tool_results,
         }
 
     async def _generate_node(self, state: ChatAgentState) -> dict[str, Any]:
         """
-        Constructs context-aware prompt and calls LLM.
+        Constructs context-aware prompt and calls LLM, executing any requested tool calls.
         """
         retrieval = state.get("retrieval")
+        available_tools = state.get("available_tools") or []
+        enable_web_search = state.get("enable_web_search", False)
+        route = state.get("route", RouteType.DIRECT.value)
+
+        # Pass tools to model if routed to TOOL, or web search is enabled, or tools exist
         llm_tools = None
-        if state.get("route") == RouteType.TOOL.value:
-            llm_tools = state.get("available_tools") or None
+        if route == RouteType.TOOL.value or enable_web_search or available_tools:
+            llm_tools = available_tools or None
+
+        tool_results = list(state.get("tool_results") or [])
+        tool_calls = list(state.get("tool_calls") or [])
 
         prompt = await self.prompt_builder.build_async(
             bot_version=state["bot_version"],
@@ -239,6 +283,7 @@ class ChatAgentGraph:
             context_window=state.get("context_window"),
             max_generation_tokens=state.get("max_tokens"),
             tools=llm_tools,
+            tool_results=tool_results or None,
         )
 
         response = await self.llm.chat(
@@ -250,11 +295,78 @@ class ChatAgentGraph:
             tools=llm_tools,
         )
 
+        # If LLM requested dynamic function calling via tool_calls
+        dynamic_calls = getattr(response, "tool_calls", None)
+        if dynamic_calls:
+            tool_calls.extend(dynamic_calls)
+            for tc in dynamic_calls:
+                fn = tc.get("function", {})
+                t_name = fn.get("name", "")
+                t_args = fn.get("arguments", {})
+                exec_result = await self.tool_registry.execute_tool(
+                    t_name,
+                    t_args,
+                    context={
+                        "user_id": state.get("user_id"),
+                        "bot_id": state.get("bot_id"),
+                        "conversation_id": state.get("conversation_id"),
+                    },
+                )
+                tool_results.append(
+                    {
+                        "name": t_name,
+                        "arguments": t_args,
+                        "result": exec_result,
+                    }
+                )
+
+            # Follow-up generation with tool results included in prompt context
+            followup_prompt = await self.prompt_builder.build_async(
+                bot_version=state["bot_version"],
+                user_message=state["query"],
+                history=state.get("history", []),
+                retrieval=retrieval,
+                memory_context=state.get("memory_context"),
+                context_window=state.get("context_window"),
+                max_generation_tokens=state.get("max_tokens"),
+                tools=None,
+                tool_results=tool_results,
+            )
+
+            response = await self.llm.chat(
+                messages=followup_prompt.messages,
+                model=state["model_key"],
+                temperature=state.get("temperature", 0.7),
+                top_p=state.get("top_p", 1.0),
+                max_tokens=state.get("max_tokens"),
+            )
+
+        # Merge any web search results into distinct_sources
+        distinct_sources = list(state.get("distinct_sources") or [])
+        for tr in tool_results:
+            if tr.get("name") == "web_search" and isinstance(tr.get("result"), dict):
+                for item in tr["result"].get("results", []):
+                    distinct_sources.append(
+                        {
+                            "document_id": uuid.uuid4(),
+                            "knowledge_base_id": uuid.UUID(int=0),
+                            "file_name": item.get("title") or "Web Search",
+                            "score": 1.0,
+                            "content_preview": item.get("snippet"),
+                            "metadata": {
+                                "url": item.get("url"),
+                                "source_type": "web_search",
+                            },
+                        }
+                    )
+
         return {
             "response": response,
             "response_content": response.content,
             "usage": response.usage,
-            "tool_calls": getattr(response, "tool_calls", []) or [],
+            "tool_calls": tool_calls,
+            "tool_results": tool_results,
+            "distinct_sources": distinct_sources,
         }
 
     async def run(self, initial_state: ChatAgentState) -> ChatAgentState:

@@ -196,6 +196,22 @@ class ChatRequest(BaseModel):
         uuid.UUID | None
     ) = None
 
+    enable_web_search: bool = Field(
+        default=False,
+        description="Enable live web search tool calling for this chat query",
+    )
+
+    web_search: bool | None = Field(
+        default=None,
+        description="Alias for enable_web_search",
+    )
+
+    @property
+    def is_web_search_enabled(self) -> bool:
+        if self.web_search is not None:
+            return self.web_search
+        return self.enable_web_search
+
 
 # =========================================================
 # SOURCE
@@ -205,7 +221,7 @@ class ChatSourceResponse(BaseModel):
 
     document_id: uuid.UUID
 
-    knowledge_base_id: uuid.UUID
+    knowledge_base_id: uuid.UUID | None = None
 
     file_name: str | None = None
 
@@ -269,6 +285,11 @@ class ChatResponse(BaseModel):
         ChatSourceResponse
     ] = Field(
         default_factory=list
+    )
+
+    tool_calls: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Details of any tools executed during the turn",
     )
 
     warnings: list[str] = Field(

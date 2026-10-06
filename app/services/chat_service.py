@@ -71,12 +71,12 @@ from app.ai.memory import (
 @dataclass
 class ChatSource:
     document_id: uuid.UUID
-    knowledge_base_id: uuid.UUID
+    knowledge_base_id: uuid.UUID | None = None
 
-    file_name: str | None
-    page: int | None
+    file_name: str | None = None
+    page: int | None = None
 
-    score: float
+    score: float = 1.0
 
     pages: list[int] = field(default_factory=list)
     chunk_count: int = 1
@@ -102,6 +102,8 @@ class ChatResult:
     sources: list[ChatSource]
 
     warnings: list[str]
+
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ChatService:
@@ -168,6 +170,7 @@ class ChatService:
         bot_id: uuid.UUID,
         message: str,
         conversation_id: uuid.UUID | None = None,
+        enable_web_search: bool = False,
     ) -> ChatResult:
 
         started_at = time.perf_counter()
@@ -263,6 +266,7 @@ class ChatService:
                         safe_user_message
                         != message
                     ),
+                    "enable_web_search": enable_web_search,
                 },
             )
         )
@@ -291,6 +295,15 @@ class ChatService:
             db,
             bot_id=bot.id,
         )
+
+        # Inject web search tool for this turn if enabled by the user
+        if enable_web_search:
+            web_search_schema = self.tools.get_web_search_schema()
+            if not any(
+                t.get("function", {}).get("name") == "web_search"
+                for t in active_tools
+            ):
+                active_tools = [*active_tools, web_search_schema]
 
         kb_links = await KnowledgeRepository.list_for_bot(
             db,
@@ -365,6 +378,7 @@ class ChatService:
                     "memory_context": memory_context,
                     "has_kb": has_kb,
                     "available_tools": active_tools,
+                    "enable_web_search": enable_web_search,
                     "model_key": model.model_key,
                     "temperature": temperature,
                     "top_p": top_p,
@@ -562,7 +576,7 @@ class ChatService:
                 pass
 
         # ---------------------------------------------
-        # Sources (Distinct by Document / Reference File)
+        # Sources (Distinct by Document / Reference File / Web Search)
         # ---------------------------------------------
 
         sources = []
@@ -588,6 +602,23 @@ class ChatService:
                 )
                 for src in distinct_sources
             ]
+
+        # Append web search sources from graph execution if present
+        for item in graph_output.get("distinct_sources", []):
+            if isinstance(item, dict) and item.get("metadata", {}).get("source_type") == "web_search":
+                sources.append(
+                    ChatSource(
+                        document_id=item.get("document_id") or uuid.uuid4(),
+                        knowledge_base_id=None,
+                        file_name=item.get("file_name") or "Web Search",
+                        page=None,
+                        score=item.get("score", 1.0),
+                        pages=[],
+                        chunk_count=1,
+                        content_preview=item.get("content_preview"),
+                        metadata=item.get("metadata", {}),
+                    )
+                )
 
         warnings = [
             *input_evaluation.warnings,
@@ -621,6 +652,7 @@ class ChatService:
             latency_ms=latency_ms,
             sources=sources,
             warnings=warnings,
+            tool_calls=graph_output.get("tool_calls", []),
         )
 
     # =====================================================

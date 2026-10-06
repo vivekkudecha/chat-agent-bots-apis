@@ -50,9 +50,15 @@ Analyze the user's latest message in ANY language (English, Hindi, Spanish, Fren
 Available choices:
 - "DIRECT": Greetings, pleasantries, small talk, general conversation, or meta-questions not requiring external documents or tools.
 - "RAG": When the user asks for specific company policies, guidelines, documents, factual information, or domain rules that should be searched in the knowledge base.
-- "TOOL": When the user specifically requests an action, computation, or tool execution.
+- "TOOL": When the user specifically requests an action, computation, web search, current news, live facts, or external data lookup.
 
 Respond with ONLY one word: DIRECT, RAG, or TOOL."""
+
+    # Pattern for quick web search intent detection
+    SEARCH_INTENT_PATTERN = re.compile(
+        r"(?:\b(?:search\s+(?:the\s+web|online|for|google)|look\s+up|latest\s+news|current\s+events|who\s+won|stock\s+price|live\s+score|weather\s+in|what\s+happened\s+(?:in|today|recently))\b)",
+        re.IGNORECASE,
+    )
 
     def __init__(self, llm: LLMProvider | None = None):
         self.llm = llm or get_llm_provider()
@@ -80,6 +86,15 @@ Respond with ONLY one word: DIRECT, RAG, or TOOL."""
         if self.CONVERSATIONAL_FAST_PATH.match(cleaned):
             logger.info("AgentRouter: Fast-path matched conversational greeting '%s' -> DIRECT", cleaned)
             return RouteType.DIRECT
+
+        # Fast path for explicit search intent when search tool is available
+        has_web_search = any(
+            t.get("function", {}).get("name") == "web_search"
+            for t in (available_tools or [])
+        )
+        if has_web_search and self.SEARCH_INTENT_PATTERN.search(cleaned):
+            logger.info("AgentRouter: Fast-path matched search intent '%s' -> TOOL", cleaned[:40])
+            return RouteType.TOOL
 
         # If tools or KBs are present, use the LLM intent router for adaptive routing
         if model:
@@ -116,5 +131,8 @@ Respond with ONLY one word: DIRECT, RAG, or TOOL."""
         # Fallback heuristic: If bot has KB, route informational queries to RAG
         if has_kb:
             return RouteType.RAG
+
+        if available_tools:
+            return RouteType.TOOL
 
         return RouteType.DIRECT

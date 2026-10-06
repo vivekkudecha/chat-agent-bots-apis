@@ -1,4 +1,6 @@
+import json
 import logging
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
@@ -30,6 +32,7 @@ class LLMResponse:
     finish_reason: str | None = None
     usage: LLMUsage = field(default_factory=LLMUsage)
     raw: Any | None = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 # =========================================================
@@ -121,15 +124,24 @@ class OpenAICompatibleProvider(LLMProvider):
         for message in messages:
             role = message.get("role")
             content = (message.get("content") or "").strip()
+            tool_calls = message.get("tool_calls")
 
-            if not content:
+            if not content and not tool_calls and role != "tool":
                 continue
 
             if role == "system":
                 system_parts.append(content)
+            elif role == "tool":
+                conversation.append(message)
             elif role in ("user", "assistant"):
-                # Merge consecutive identical roles
-                if conversation and conversation[-1]["role"] == role:
+                if tool_calls:
+                    conversation.append(message)
+                elif (
+                    conversation
+                    and conversation[-1]["role"] == role
+                    and not conversation[-1].get("tool_calls")
+                    and conversation[-1].get("role") != "tool"
+                ):
                     prev = conversation[-1]["content"]
                     conversation[-1]["content"] = f"{prev}\n\n{content}".strip()
                 else:
@@ -147,7 +159,13 @@ class OpenAICompatibleProvider(LLMProvider):
         # Re-merge any consecutive identical roles that may have resulted
         merged_convo: list[dict[str, Any]] = []
         for msg in conversation:
-            if merged_convo and merged_convo[-1]["role"] == msg["role"]:
+            if (
+                merged_convo
+                and merged_convo[-1]["role"] == msg["role"]
+                and msg["role"] in ("user", "assistant")
+                and not merged_convo[-1].get("tool_calls")
+                and not msg.get("tool_calls")
+            ):
                 prev = merged_convo[-1]["content"]
                 merged_convo[-1]["content"] = f"{prev}\n\n{msg['content']}".strip()
             else:
@@ -203,6 +221,36 @@ class OpenAICompatibleProvider(LLMProvider):
             content = choice.message.content or ""
             usage = LLMUsage()
 
+            # Extract tool calls if returned by model
+            raw_tool_calls = getattr(choice.message, "tool_calls", None)
+            parsed_tool_calls: list[dict[str, Any]] = []
+            if raw_tool_calls:
+                for tc in raw_tool_calls:
+                    tc_id = getattr(tc, "id", None) or f"call_{uuid.uuid4().hex[:8]}"
+                    fn = getattr(tc, "function", None)
+                    fn_name = getattr(fn, "name", "") if fn else ""
+                    fn_args_raw = getattr(fn, "arguments", "{}") if fn else "{}"
+                    if isinstance(fn_args_raw, str):
+                        try:
+                            fn_args = json.loads(fn_args_raw)
+                        except Exception:
+                            fn_args = {"raw": fn_args_raw}
+                    elif isinstance(fn_args_raw, dict):
+                        fn_args = fn_args_raw
+                    else:
+                        fn_args = {}
+
+                    parsed_tool_calls.append(
+                        {
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {
+                                "name": fn_name,
+                                "arguments": fn_args,
+                            },
+                        }
+                    )
+
             raw_usage = getattr(response, "usage", None)
             if raw_usage:
                 if isinstance(raw_usage, dict):
@@ -229,6 +277,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 finish_reason=choice.finish_reason,
                 usage=usage,
                 raw=response,
+                tool_calls=parsed_tool_calls,
             )
 
         except ModelExecutionException:

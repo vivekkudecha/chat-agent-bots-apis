@@ -57,6 +57,7 @@ async def chat(
         conversation_id=(
             payload.conversation_id
         ),
+        enable_web_search=payload.is_web_search_enabled,
     )
 
     return ChatResponse(
@@ -116,6 +117,8 @@ async def chat(
             )
             for source in result.sources
         ],
+
+        tool_calls=result.tool_calls,
 
         warnings=result.warnings,
     )
