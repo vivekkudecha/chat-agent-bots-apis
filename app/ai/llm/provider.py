@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
@@ -7,6 +8,8 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 from app.core.exceptions import ModelExecutionException
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================
@@ -111,42 +114,53 @@ class OpenAICompatibleProvider(LLMProvider):
     def _normalize_messages(messages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         if not messages:
             return []
-        
+
         system_parts: list[str] = []
-        normalized: list[dict[str, Any]] = []
-        
+        conversation: list[dict[str, Any]] = []
+
         for message in messages:
             role = message.get("role")
-            content = message.get("content", "").strip()
+            content = (message.get("content") or "").strip()
 
             if not content:
                 continue
 
             if role == "system":
                 system_parts.append(content)
+            elif role in ("user", "assistant"):
+                # Merge consecutive identical roles
+                if conversation and conversation[-1]["role"] == role:
+                    prev = conversation[-1]["content"]
+                    conversation[-1]["content"] = f"{prev}\n\n{content}".strip()
+                else:
+                    conversation.append({"role": role, "content": content})
             else:
-                normalized.append({
-                    "role": role,
-                    "content": content
-                })
-        normalized: list[dict[str, Any]] = []
+                conversation.append({"role": role, "content": content})
 
+        # Chat models (like Gemma, Llama, etc.) require:
+        # 1. The first conversational message after system MUST be 'user'.
+        # If conversation starts with 'assistant' (e.g. from history budget cutoff),
+        # drop leading assistant messages until the first user message.
+        while conversation and conversation[0]["role"] == "assistant":
+            conversation.pop(0)
+
+        # Re-merge any consecutive identical roles that may have resulted
+        merged_convo: list[dict[str, Any]] = []
+        for msg in conversation:
+            if merged_convo and merged_convo[-1]["role"] == msg["role"]:
+                prev = merged_convo[-1]["content"]
+                merged_convo[-1]["content"] = f"{prev}\n\n{msg['content']}".strip()
+            else:
+                merged_convo.append(msg)
+
+        normalized: list[dict[str, Any]] = []
         if system_parts:
             normalized.append({
-                'role': 'system',
-                'content': "\n\n".join(system_parts)
+                "role": "system",
+                "content": "\n\n".join(system_parts),
             })
 
-        for message in messages:
-            role = message.get('role')
-            content = message.get("content", "").strip()
-
-            if normalized and normalized[-1]['role'] == role:
-                prev = normalized[-1]['content']
-                normalized[-1]['content'] = f"{prev}\n\n{content}".strip()
-            else:
-                normalized.append({'role': role, 'content': content})
-
+        normalized.extend(merged_convo)
         return normalized
 
 
@@ -221,7 +235,11 @@ class OpenAICompatibleProvider(LLMProvider):
             raise
 
         except Exception as exc:
-            raise ModelExecutionException("LLM request failed.") from exc
+            logger.exception("LLM request failed: %s", exc)
+            err_msg = str(exc)
+            if hasattr(exc, "message") and exc.message:
+                err_msg = exc.message
+            raise ModelExecutionException(f"LLM request failed: {err_msg}") from exc
 
     # =====================================================
     # STREAMING
@@ -266,7 +284,11 @@ class OpenAICompatibleProvider(LLMProvider):
                     yield content
 
         except Exception as exc:
-            raise ModelExecutionException("LLM streaming request failed.") from exc
+            logger.exception("LLM streaming request failed: %s", exc)
+            err_msg = str(exc)
+            if hasattr(exc, "message") and exc.message:
+                err_msg = exc.message
+            raise ModelExecutionException(f"LLM streaming request failed: {err_msg}") from exc
 
 
 # =========================================================

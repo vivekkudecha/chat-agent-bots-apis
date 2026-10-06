@@ -138,7 +138,7 @@ Security rules:
         # ---------------------------------------------
         # 1. Calculate Available Prompt Budget
         # ---------------------------------------------
-        total_context = context_window or 4096
+        total_context = context_window or 8192
         reserved_gen = max_generation_tokens or 512
         safety_margin = 80
         max_prompt_budget = max(400, total_context - reserved_gen - safety_margin)
@@ -321,6 +321,11 @@ Security rules:
 
         # Reverse back to chronological order
         packed_history.reverse()
+
+        # Ensure history starts with a user message so conversation roles alternate properly
+        while packed_history and packed_history[0]["role"] == "assistant":
+            packed_history.pop(0)
+
         messages.extend(packed_history)
 
         # ---------------------------------------------

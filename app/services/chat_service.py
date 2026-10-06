@@ -1,9 +1,12 @@
 import asyncio
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -344,7 +347,7 @@ class ChatService:
             if model_config
             else 2048
         )
-        context_window = getattr(model, "context_window", None) or 4096
+        context_window = getattr(model, "context_window", None) or 8192
 
         # ---------------------------------------------
         # LangGraph Workflow Execution
@@ -377,6 +380,7 @@ class ChatService:
             route = RouteType(route_val)
 
         except Exception as exc:
+            logger.exception("Chat workflow execution failed: %s", exc)
 
             await self._record_failure(
                 db,
@@ -395,7 +399,7 @@ class ChatService:
             ):
                 raise
 
-            raise ModelExecutionException() from exc
+            raise ModelExecutionException(str(exc)) from exc
 
         # ---------------------------------------------
         # OUTPUT GUARDRAILS

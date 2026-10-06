@@ -258,6 +258,21 @@ class KnowledgeRepository:
         )
 
     @staticmethod
+    async def count_bot_links(
+        db: AsyncSession,
+        *,
+        knowledge_base_id: uuid.UUID,
+    ) -> int:
+
+        result = await db.execute(
+            select(func.count(BotKnowledgeBase.bot_id)).where(
+                BotKnowledgeBase.knowledge_base_id == knowledge_base_id
+            )
+        )
+
+        return result.scalar_one()
+
+    @staticmethod
     async def update_bot_link(
         db: AsyncSession,
         link: BotKnowledgeBase,

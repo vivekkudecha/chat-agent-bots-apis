@@ -23,6 +23,7 @@ BotStatus = Literal[
 
 BotVisibility = Literal[
     "private",
+    "organization",
     "public",
 ]
 
@@ -239,6 +240,27 @@ class BotResponse(BaseModel):
 class BotDetailResponse(BotResponse):
 
     versions: list[BotVersionResponse] = Field(
+        default_factory=list,
+    )
+
+
+class BotEditableDocument(BaseModel):
+
+    id: uuid.UUID
+    original_name: str
+    file_size: int | None
+    status: str
+    chunk_count: int
+
+    model_config = ConfigDict(
+        from_attributes=True,
+    )
+
+
+class BotEditResponse(BotDetailResponse):
+
+    knowledge_base_id: uuid.UUID | None = None
+    documents: list[BotEditableDocument] = Field(
         default_factory=list,
     )
 
