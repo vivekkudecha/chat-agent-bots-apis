@@ -12,6 +12,7 @@ from app.ai.agent.state import RouteType
 from app.ai.agent.tools import ToolRegistry
 from app.config import settings
 from app.ai.llm.provider import LLMProvider, LLMResponse, OpenAICompatibleProvider
+from app.ai.llm.sources import SourceCandidate
 
 if TYPE_CHECKING:
     from app.models.bot import BotVersion
@@ -60,6 +61,7 @@ class ChatAgentState(TypedDict, total=False):
     # Retrieval results
     retrieval: Any | None
     distinct_sources: list[dict[str, Any]]
+    source_candidates: list[SourceCandidate]
 
     # Tool calls & results
     tool_calls: list[dict[str, Any]]
@@ -405,7 +407,7 @@ class ChatAgentGraph:
                 )
 
             # Follow-up generation with tool results included in prompt context and tools=None
-            followup_prompt = await self.prompt_builder.build_async(
+            prompt = await self.prompt_builder.build_async(
                 bot_version=state["bot_version"],
                 user_message=state["query"],
                 history=state.get("history", []),
@@ -418,7 +420,7 @@ class ChatAgentGraph:
             )
 
             response = await self.llm.chat(
-                messages=followup_prompt.messages,
+                messages=prompt.messages,
                 model=state["model_key"],
                 temperature=state.get("temperature", 0.7),
                 top_p=state.get("top_p", 1.0),
@@ -449,7 +451,7 @@ class ChatAgentGraph:
                         )
                         tool_results.append({"name": t_name, "arguments": t_args, "result": exec_res})
 
-                recovery_prompt = await self.prompt_builder.build_async(
+                prompt = await self.prompt_builder.build_async(
                     bot_version=state["bot_version"],
                     user_message=state["query"],
                     history=state.get("history", []),
@@ -461,7 +463,7 @@ class ChatAgentGraph:
                     tool_results=tool_results,
                 )
                 response = await self.llm.chat(
-                    messages=recovery_prompt.messages,
+                    messages=prompt.messages,
                     model=state["model_key"],
                     temperature=0.3,
                     top_p=1.0,
@@ -469,32 +471,13 @@ class ChatAgentGraph:
                     tools=None,
                 )
 
-        # Merge any web search results into distinct_sources
-        distinct_sources = list(state.get("distinct_sources") or [])
-        for tr in tool_results:
-            if tr.get("name") == "web_search" and isinstance(tr.get("result"), dict):
-                for item in tr["result"].get("results", []):
-                    distinct_sources.append(
-                        {
-                            "document_id": uuid.uuid4(),
-                            "knowledge_base_id": uuid.UUID(int=0),
-                            "file_name": item.get("title") or "Web Search",
-                            "score": 1.0,
-                            "content_preview": item.get("snippet"),
-                            "metadata": {
-                                "url": item.get("url"),
-                                "source_type": "web_search",
-                            },
-                        }
-                    )
-
         return {
             "response": response,
             "response_content": response.content,
             "usage": response.usage,
             "tool_calls": tool_calls,
             "tool_results": tool_results,
-            "distinct_sources": distinct_sources,
+            "source_candidates": prompt.source_candidates,
         }
 
     async def run(self, initial_state: ChatAgentState) -> ChatAgentState:

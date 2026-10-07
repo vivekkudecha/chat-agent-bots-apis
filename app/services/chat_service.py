@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.ai.llm.sources import select_cited_sources
 from app.ai.guardrails import (
     GuardrailStage,
 )
@@ -298,7 +299,11 @@ class ChatService:
 
         # Inject web search tool for this turn if enabled by the user
         if enable_web_search:
-            web_search_schema = self.tools.get_web_search_schema()
+            schema_fn = getattr(self.tools, "get_web_search_schema", None)
+            web_search_schema = schema_fn() if schema_fn else None
+            if not web_search_schema:
+                from app.tools.web_search import WebSearchTool
+                web_search_schema = WebSearchTool.get_schema()
             if not any(
                 t.get("function", {}).get("name") == "web_search"
                 for t in active_tools
@@ -454,53 +459,41 @@ class ChatService:
         # Sources (Distinct by Document / Reference File / Web Search)
         # ---------------------------------------------
 
-        sources = []
-        if safe_retrieval and safe_retrieval.chunks:
-            distinct_sources = (
-                safe_retrieval.get_distinct_sources()
+        # Filter after output guardrails: replaced/redacted answers must not keep
+        # citations from the original response. The catalog contains only data
+        # actually supplied in the final generation prompt, including its budget.
+        sources = [
+            ChatSource(**source)
+            for source in select_cited_sources(
+                safe_output, graph_output.get("source_candidates", []),
             )
-            sources = [
-                ChatSource(
-                    document_id=src.document_id,
-                    knowledge_base_id=(
-                        src.knowledge_base_id
-                    ),
-                    file_name=src.file_name,
-                    page=src.page,
-                    score=src.score,
-                    pages=src.pages,
-                    chunk_count=src.chunk_count,
-                    content_preview=(
-                        src.content_preview
-                    ),
-                    metadata=src.metadata,
-                )
-                for src in distinct_sources
-            ]
-
-        # Append web search sources from graph execution if present
-        for item in graph_output.get("distinct_sources", []):
-            if isinstance(item, dict) and item.get("metadata", {}).get("source_type") == "web_search":
-                sources.append(
-                    ChatSource(
-                        document_id=item.get("document_id") or uuid.uuid4(),
-                        knowledge_base_id=None,
-                        file_name=item.get("file_name") or "Web Search",
-                        page=None,
-                        score=item.get("score", 1.0),
-                        pages=[],
-                        chunk_count=1,
-                        content_preview=item.get("content_preview"),
-                        metadata=item.get("metadata", {}),
-                    )
-                )
+        ]
 
         serialized_sources = [
             {
+                "document_id": str(s.document_id) if s.document_id else None,
+                "documentId": str(s.document_id) if s.document_id else None,
+                "knowledge_base_id": (
+                    str(s.knowledge_base_id) if s.knowledge_base_id else None
+                ),
+                "knowledgeBaseId": (
+                    str(s.knowledge_base_id) if s.knowledge_base_id else None
+                ),
+                "file_name": s.file_name,
+                "fileName": s.file_name,
                 "title": s.file_name,
-                "url": (s.metadata or {}).get("url"),
+                "page": s.page,
+                "pages": s.pages or ([] if s.page is None else [s.page]),
+                "score": s.score,
+                "chunk_count": s.chunk_count,
+                "content_preview": s.content_preview,
                 "snippet": s.content_preview,
-                "source_type": (s.metadata or {}).get("source_type", "knowledge_base"),
+                "excerpt": s.content_preview,
+                "url": (s.metadata or {}).get("url"),
+                "source_type": (s.metadata or {}).get(
+                    "source_type", "knowledge_base"
+                ),
+                "metadata": s.metadata or {},
             }
             for s in sources
         ]

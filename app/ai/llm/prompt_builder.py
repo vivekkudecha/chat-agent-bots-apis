@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import re, json
+import uuid
+from urllib.parse import urlsplit
 from typing import Any, TYPE_CHECKING
 
 from app.config import settings
 from app.models.bot import BotVersion
 from app.models.conversation import Message
+from app.ai.llm.sources import SourceCandidate
 
 if TYPE_CHECKING:
     from app.ai.rag.retrieval import RetrievalResult
@@ -19,6 +22,7 @@ class BuiltPrompt:
     messages: list[dict[str, Any]]
     context_text: str
     source_count: int
+    source_candidates: list[SourceCandidate] = field(default_factory=list)
 
 
 # Backward compatibility alias
@@ -186,12 +190,15 @@ Follow the platform rules before any bot-specific instructions:
         # ---------------------------------------------
         # 2. Dynamic Budget Allocation
         # ---------------------------------------------
+        source_candidates: list[SourceCandidate] = []
         has_retrieval = bool(retrieval and getattr(retrieval, "chunks", None))
         if has_retrieval:
             # Allocate up to 60% of flexible budget to RAG (capped by RAG_MAX_CONTEXT_TOKENS)
             max_rag_allowed = getattr(settings, "RAG_MAX_CONTEXT_TOKENS", 1500)
             rag_budget = min(max_rag_allowed, max(120, int(flexible_budget * 0.60)))
-            context_text, source_count = self._build_context(retrieval, max_tokens=rag_budget)
+            context_text, source_count = self._build_context(
+                retrieval, max_tokens=rag_budget, source_candidates=source_candidates,
+            )
             used_rag_tokens = len(context_text) // 4
             # Remaining flexible tokens go to history & episodic memory
             history_budget = max(80, flexible_budget - used_rag_tokens)
@@ -327,6 +334,7 @@ Follow the platform rules before any bot-specific instructions:
         # ---------------------------------------------
         if tool_results:
             results_sections = []
+            web_index = 0
             for tr in tool_results:
                 t_name = tr.get("name", "tool")
                 t_res = tr.get("result", {})
@@ -334,11 +342,26 @@ Follow the platform rules before any bot-specific instructions:
                     search_items = t_res.get("results", [])
                     if search_items:
                         items_text = []
-                        for idx, item in enumerate(search_items, 1):
-                            title = item.get("title", "").strip()
-                            snippet = item.get("snippet", "").strip()
-                            url = item.get("url", "").strip()
-                            items_text.append(f"[{idx}] {title}\nSummary: {snippet}\nSource URL: {url}")
+                        for item in search_items:
+                            title = (item.get("title") or "").strip()
+                            snippet = (item.get("snippet") or "").strip()
+                            url = (item.get("url") or "").strip()
+                            try:
+                                parsed_url = urlsplit(url)
+                            except ValueError:
+                                continue
+                            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc or not snippet:
+                                continue
+                            web_index += 1
+                            citation_id = f"WEB{web_index}"
+                            items_text.append(f"[{citation_id}] {title}\nSummary: {snippet}\nSource URL: {url}")
+                            source_candidates.append(SourceCandidate(
+                                citation_id=citation_id,
+                                document_id=uuid.uuid5(uuid.NAMESPACE_URL, url),
+                                knowledge_base_id=None, file_name=title or "Web Search",
+                                text=snippet, score=1.0,
+                                metadata={"url": url, "source_type": "web_search"},
+                            ))
                         results_sections.append("Web Search Findings:\n" + "\n\n".join(items_text))
                     else:
                         results_sections.append("Web Search Findings: No relevant public web results found.")
@@ -361,6 +384,19 @@ Follow the platform rules before any bot-specific instructions:
                     ),
                 }
             )
+
+        if source_candidates:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "SOURCE CITATIONS: Cite a supplied reference only when it directly supports "
+                    "a factual claim in your answer. Put its exact marker, such as [KB1] or "
+                    "[WEB1], immediately after that claim. Use only IDs from the reference "
+                    "headers in this turn, never IDs from conversation history. Do not cite "
+                    "unrelated results, examples, or sources you did not use. If none of the "
+                    "references support an answer, say so without citations. Do not invent IDs."
+                ),
+            })
 
         # ---------------------------------------------
         # TEMPORAL CONTEXT
@@ -482,6 +518,7 @@ Follow the platform rules before any bot-specific instructions:
             messages=messages,
             context_text=context_text,
             source_count=source_count,
+            source_candidates=source_candidates,
         )
 
     # =====================================================
@@ -492,6 +529,7 @@ Follow the platform rules before any bot-specific instructions:
         self,
         retrieval: Any,
         max_tokens: int | None = None,
+        source_candidates: list[SourceCandidate] | None = None,
     ) -> tuple[str, int]:
         target_budget = (
             max_tokens
@@ -506,7 +544,7 @@ Follow the platform rules before any bot-specific instructions:
             start=1,
         ):
             source_parts = [
-                f"Source {index}",
+                f"KB{index}",
             ]
 
             if chunk.file_name:
@@ -522,23 +560,29 @@ Follow the platform rules before any bot-specific instructions:
             # Approximate token count (1 token ~= 4 characters)
             chunk_tokens = (len(header) + len(chunk_text) + 20) // 4
 
-            if used_tokens + chunk_tokens > target_budget:
+            truncated = used_tokens + chunk_tokens > target_budget
+            if truncated:
                 # If nothing has been packed yet, include a truncated preview to prevent empty context
                 if packed_count == 0:
                     remaining_chars = max(300, (target_budget - used_tokens) * 4)
-                    truncated_text = chunk_text[:remaining_chars].strip() + "..."
-                    sections.append(
-                        f"[{header}]\n"
-                        f"{truncated_text}"
-                    )
-                    packed_count += 1
-                break
+                    chunk_text = chunk_text[:remaining_chars].strip() + "..."
+                else:
+                    break
 
             sections.append(
-                f"[{header}]\n"
+                f"[KB{index}] {header}\n"
                 f"{chunk_text}"
             )
+            if source_candidates is not None:
+                source_candidates.append(SourceCandidate(
+                    citation_id=f"KB{index}", document_id=chunk.document_id,
+                    knowledge_base_id=chunk.knowledge_base_id, file_name=chunk.file_name,
+                    text=chunk_text, score=chunk.score, page=chunk.page,
+                    metadata={**chunk.metadata, "source_type": "knowledge_base"},
+                ))
             used_tokens += chunk_tokens
             packed_count += 1
+            if truncated:
+                break
 
         return "\n\n---\n\n".join(sections), packed_count
