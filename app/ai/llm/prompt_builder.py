@@ -104,6 +104,7 @@ Follow the platform rules before any bot-specific instructions:
         history: list[Message] | None = None,
         retrieval: Any | None = None,
         memory_context: Any | None = None,
+        runtime_context: str | None = None,
         context_window: int | None = None,
         max_generation_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
@@ -115,6 +116,7 @@ Follow the platform rules before any bot-specific instructions:
             history=history,
             retrieval=retrieval,
             memory_context=memory_context,
+            runtime_context=runtime_context,
             context_window=context_window,
             max_generation_tokens=max_generation_tokens,
             tools=tools,
@@ -133,6 +135,7 @@ Follow the platform rules before any bot-specific instructions:
         history: list[Message] | None = None,
         retrieval: Any | None = None,
         memory_context: Any | None = None,
+        runtime_context: str | None = None,
         context_window: int | None = None,
         max_generation_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
@@ -144,6 +147,7 @@ Follow the platform rules before any bot-specific instructions:
             history=history,
             retrieval=retrieval,
             memory_context=memory_context,
+            runtime_context=runtime_context,
             context_window=context_window,
             max_generation_tokens=max_generation_tokens,
             tools=tools,
@@ -162,6 +166,7 @@ Follow the platform rules before any bot-specific instructions:
         history: list[Message] | None = None,
         retrieval: Any | None = None,
         memory_context: Any | None = None,
+        runtime_context: str | None = None,
         context_window: int | None = None,
         max_generation_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
@@ -242,6 +247,22 @@ Follow the platform rules before any bot-specific instructions:
                 ),
             }
         )
+
+        # ---------------------------------------------
+        # AUTHORITATIVE RUNTIME CONTEXT
+        # ---------------------------------------------
+        if runtime_context and runtime_context.strip():
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "AUTHORITATIVE RUNTIME CONTEXT\n\n"
+                        f"{runtime_context.strip()}\n\n"
+                        "This runtime context is authoritative and provided directly by the host system. "
+                        "Prioritize this system context for any date, time, timezone, or environmental information."
+                    ),
+                }
+            )
 
         # ---------------------------------------------
         # BOT INSTRUCTION
@@ -329,74 +350,7 @@ Follow the platform rules before any bot-specific instructions:
                 }
             )
 
-        # ---------------------------------------------
-        # TOOL EXECUTION RESULTS
-        # ---------------------------------------------
-        if tool_results:
-            results_sections = []
-            web_index = 0
-            for tr in tool_results:
-                t_name = tr.get("name", "tool")
-                t_res = tr.get("result", {})
-                if t_name == "web_search" and isinstance(t_res, dict):
-                    search_items = t_res.get("results", [])
-                    if search_items:
-                        items_text = []
-                        for item in search_items:
-                            title = (item.get("title") or "").strip()
-                            snippet = (item.get("snippet") or "").strip()
-                            url = (item.get("url") or "").strip()
-                            try:
-                                parsed_url = urlsplit(url)
-                            except ValueError:
-                                continue
-                            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc or not snippet:
-                                continue
-                            web_index += 1
-                            citation_id = f"WEB{web_index}"
-                            items_text.append(f"[{citation_id}] {title}\nSummary: {snippet}\nSource URL: {url}")
-                            source_candidates.append(SourceCandidate(
-                                citation_id=citation_id,
-                                document_id=uuid.uuid5(uuid.NAMESPACE_URL, url),
-                                knowledge_base_id=None, file_name=title or "Web Search",
-                                text=snippet, score=1.0,
-                                metadata={"url": url, "source_type": "web_search"},
-                            ))
-                        results_sections.append("Web Search Findings:\n" + "\n\n".join(items_text))
-                    else:
-                        results_sections.append("Web Search Findings: No relevant public web results found.")
-                else:
-                    results_sections.append(
-                        f"Tool {t_name} Result:\n{json.dumps(t_res, indent=2) if isinstance(t_res, (dict, list)) else str(t_res)}"
-                    )
-            tool_content = "\n\n---\n\n".join(results_sections)
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "EXTERNAL TOOL EXECUTION DATA\n\n"
-                        "The following external data was retrieved from tool executions for this turn:\n\n"
-                        f"<tool_results>\n{tool_content}\n</tool_results>\n\n"
-                        "CRITICAL INSTRUCTIONS:\n"
-                        "1. Respond directly in natural, fluent English using the above information. Do NOT emit JSON, function calls, or robotic intros like 'Based on the external tool execution data'.\n"
-                        "2. Strictly limit your response to facts relevant to the user query and your bot configuration. Do not answer random off-topic questions or speculate beyond verifiable facts.\n"
-                        "3. Seamlessly cite key source URLs or references if available."
-                    ),
-                }
-            )
 
-        if source_candidates:
-            messages.append({
-                "role": "system",
-                "content": (
-                    "SOURCE CITATIONS: Cite a supplied reference only when it directly supports "
-                    "a factual claim in your answer. Put its exact marker, such as [KB1] or "
-                    "[WEB1], immediately after that claim. Use only IDs from the reference "
-                    "headers in this turn, never IDs from conversation history. Do not cite "
-                    "unrelated results, examples, or sources you did not use. If none of the "
-                    "references support an answer, say so without citations. Do not invent IDs."
-                ),
-            })
 
         # ---------------------------------------------
         # TEMPORAL CONTEXT
@@ -503,6 +457,78 @@ Follow the platform rules before any bot-specific instructions:
             packed_history.pop(0)
 
         messages.extend(packed_history)
+
+        # ---------------------------------------------
+        # TOOL EXECUTION RESULTS (CURRENT TURN CONTEXT)
+        # Placed immediately before the user message so real-time tool data
+        # takes strict precedence over any cutoff claims in older history turns.
+        # ---------------------------------------------
+        if tool_results:
+            results_sections = []
+            web_index = 0
+            for tr in tool_results:
+                t_name = tr.get("name", "tool")
+                t_res = tr.get("result", {})
+                if t_name == "web_search" and isinstance(t_res, dict):
+                    search_items = t_res.get("results", [])
+                    if search_items:
+                        items_text = []
+                        for item in search_items:
+                            title = (item.get("title") or "").strip()
+                            snippet = (item.get("snippet") or "").strip()
+                            url = (item.get("url") or "").strip()
+                            try:
+                                parsed_url = urlsplit(url)
+                            except ValueError:
+                                continue
+                            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc or not snippet:
+                                continue
+                            web_index += 1
+                            citation_id = f"WEB{web_index}"
+                            items_text.append(f"[{citation_id}] {title}\nSummary: {snippet}\nSource URL: {url}")
+                            source_candidates.append(SourceCandidate(
+                                citation_id=citation_id,
+                                document_id=uuid.uuid5(uuid.NAMESPACE_URL, url),
+                                knowledge_base_id=None, file_name=title or "Web Search",
+                                text=snippet, score=1.0,
+                                metadata={"url": url, "source_type": "web_search"},
+                            ))
+                        results_sections.append("Web Search Findings:\n" + "\n\n".join(items_text))
+                    else:
+                        results_sections.append("Web Search Findings: No relevant public web results found.")
+                else:
+                    results_sections.append(
+                        f"Tool {t_name} Result:\n{json.dumps(t_res, indent=2) if isinstance(t_res, (dict, list)) else str(t_res)}"
+                    )
+            tool_content = "\n\n---\n\n".join(results_sections)
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "LIVE REAL-TIME EXTERNAL DATA\n\n"
+                        "The following real-time external data was retrieved from tool executions for this turn:\n\n"
+                        f"<tool_results>\n{tool_content}\n</tool_results>\n\n"
+                        "CRITICAL INSTRUCTIONS:\n"
+                        "1. Respond directly in natural, fluent English using the above information. Do NOT emit JSON, function calls, or robotic intros like 'Based on the external tool execution data'.\n"
+                        "2. You MUST answer the user's question directly using the information provided in <tool_results>. Disregard any prior statements in the conversation history about knowledge cutoffs or lack of real-time access. NEVER state that your knowledge cutoff is in the past, and NEVER claim you cannot access current information.\n"
+                        "3. Strictly limit your response to facts relevant to the user query and your bot configuration. Do not answer random off-topic questions or speculate beyond verifiable facts.\n"
+                        "4. Seamlessly cite key source URLs or references if available."
+                    ),
+                }
+            )
+
+        if source_candidates:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "SOURCE CITATIONS: Cite a supplied reference only when it directly supports "
+                    "a factual claim in your answer. Put its exact marker, such as [KB1] or "
+                    "[WEB1], immediately after that claim. Use only IDs from the reference "
+                    "headers in this turn, never IDs from conversation history. Do not cite "
+                    "unrelated results, examples, or sources you did not use. If none of the "
+                    "references support an answer, say so without citations. Do not invent IDs."
+                ),
+            })
 
         # ---------------------------------------------
         # CURRENT MESSAGE

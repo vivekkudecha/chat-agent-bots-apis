@@ -1,30 +1,53 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import urllib.parse
+import re
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-import httpx
-from lxml import html
+from ddgs import DDGS
 
 from app.config import settings
 from app.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
 
+_TIME_LIMITS = {
+    "any": None,
+    "day": "d",
+    "week": "w",
+    "month": "m",
+    "year": "y",
+}
+
 
 class WebSearchTool(BaseTool):
     """
-    Live web search tool.
-    Provides internet browsing capabilities to bots using Tavily, SerpAPI,
-    or fast zero-dependency DuckDuckGo Lite search as default.
+    DuckDuckGo-only web search.
+
+    Design:
+    - No keyword-based routing.
+    - The caller/LLM can semantically choose freshness and region.
+    - Web + news can be searched together.
+    - Top result pages are extracted so snippets contain real evidence.
+    - External response format remains unchanged:
+        {
+            "query": "...",
+            "count": N,
+            "results": [
+                {"title": "...", "url": "...", "snippet": "..."}
+            ]
+        }
     """
 
     name: str = "web_search"
     display_name: str = "Live Web Search"
     description: str = (
-        "Search the live web for recent news, up-to-date facts, current events, and external references."
+        "Search the live web with DuckDuckGo. Use for current/external "
+        "information. For time-sensitive requests, set time_range semantically. "
+        "For geographically relevant searches, set the appropriate region."
     )
     tool_type: str = "search"
     timeout_seconds: int = 15
@@ -34,12 +57,37 @@ class WebSearchTool(BaseTool):
         "properties": {
             "query": {
                 "type": "string",
-                "description": "The search query to look up on the web.",
+                "description": "Standalone search query.",
             },
             "max_results": {
                 "type": "integer",
-                "description": "Maximum number of search results to return (default: 5).",
+                "minimum": 1,
+                "maximum": 10,
                 "default": 5,
+            },
+            "search_type": {
+                "type": "string",
+                "enum": ["auto", "web", "news"],
+                "default": "auto",
+                "description": (
+                    "auto searches web and news together. "
+                    "Use web or news only when semantically appropriate."
+                ),
+            },
+            "time_range": {
+                "type": "string",
+                "enum": ["any", "day", "week", "month", "year"],
+                "default": "any",
+                "description": (
+                    "Freshness constraint. Example: a request about this week "
+                    "should use week; a request about today should use day."
+                ),
+            },
+            "region": {
+                "type": "string",
+                "description": (
+                    "DuckDuckGo region such as in-en, us-en, uk-en, wt-wt."
+                ),
             },
         },
         "required": ["query"],
@@ -50,48 +98,18 @@ class WebSearchTool(BaseTool):
         arguments: dict[str, Any] | str,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """
-        Executes live web search using available provider backends.
-        """
-        import re
+        del context
 
-        # Handle cases where arguments are passed as a JSON string
-        if isinstance(arguments, str):
-            cleaned_str = arguments.strip()
-            if cleaned_str.startswith("```"):
-                cleaned_str = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned_str)
-                cleaned_str = re.sub(r"\s*```$", "", cleaned_str).strip()
-            cleaned_str = re.sub(r'""+', '"', cleaned_str)
-            try:
-                parsed_args = json.loads(cleaned_str)
-            except Exception:
-                parsed_args = {"query": cleaned_str}
-        elif isinstance(arguments, dict):
-            parsed_args = dict(arguments)
-        else:
-            parsed_args = {}
+        args = self._parse_arguments(arguments)
 
-        # Unnest if parameters are wrapped in a nested dictionary
-        if "parameters" in parsed_args and isinstance(parsed_args["parameters"], dict):
-            parsed_args = parsed_args["parameters"]
-        elif "arguments" in parsed_args and isinstance(parsed_args["arguments"], dict):
-            parsed_args = parsed_args["arguments"]
-        elif "args" in parsed_args and isinstance(parsed_args["args"], dict):
-            parsed_args = parsed_args["args"]
-
-        raw_query = (
-            parsed_args.get("query")
-            or parsed_args.get("search_query")
-            or parsed_args.get("q")
-            or parsed_args.get("input")
+        query = str(
+            args.get("query")
+            or args.get("search_query")
+            or args.get("q")
+            or args.get("input")
             or ""
-        )
-        if isinstance(raw_query, str):
-            query = raw_query.strip().strip('"\'').strip()
-        else:
-            query = str(raw_query).strip()
+        ).strip().strip("\"'")
 
-        query = re.sub(r'""+', '"', query)
         if not query:
             return {
                 "query": "",
@@ -100,215 +118,594 @@ class WebSearchTool(BaseTool):
                 "error": "Empty search query provided.",
             }
 
-        max_results = int(
-            parsed_args.get("max_results")
-            or getattr(settings, "WEB_SEARCH_MAX_RESULTS", 5)
-            or 5
+        max_results = self._int(
+            args.get("max_results"),
+            default=getattr(settings, "WEB_SEARCH_MAX_RESULTS", 5) or 5,
+            minimum=1,
+            maximum=10,
         )
-        max_results = max(1, min(10, max_results))
 
-        logger.info("Executing web search: query='%s', max_results=%d", query, max_results)
+        search_type = str(
+            args.get("search_type") or "auto"
+        ).strip().lower()
 
-        # 1. Try Tavily if configured
-        tavily_key = getattr(settings, "TAVILY_API_KEY", None)
-        if tavily_key:
-            try:
-                results = await self._search_tavily(query, tavily_key, max_results)
-                if results:
-                    return {"query": query, "count": len(results), "results": results}
-            except Exception as exc:
-                logger.warning("Tavily search failed, falling back: %s", exc)
+        if search_type not in {"auto", "web", "news"}:
+            search_type = "auto"
 
-        # 2. Try SerpAPI if configured
-        serpapi_key = getattr(settings, "SERPAPI_API_KEY", None)
-        if serpapi_key:
-            try:
-                results = await self._search_serpapi(query, serpapi_key, max_results)
-                if results:
-                    return {"query": query, "count": len(results), "results": results}
-            except Exception as exc:
-                logger.warning("SerpAPI search failed, falling back: %s", exc)
+        time_range = str(
+            args.get("time_range") or "any"
+        ).strip().lower()
 
-        # 3. Default: High-reliability DuckDuckGo search
+        timelimit = _TIME_LIMITS.get(time_range)
+
+        region = str(
+            args.get("region")
+            or getattr(settings, "WEB_SEARCH_REGION", "wt-wt")
+            or "wt-wt"
+        ).strip()
+
         try:
-            results = await self._search_duckduckgo(query, max_results)
-            return {"query": query, "count": len(results), "results": results}
+            results = await asyncio.wait_for(
+                self._search(
+                    query=query,
+                    max_results=max_results,
+                    search_type=search_type,
+                    timelimit=timelimit,
+                    region=region,
+                ),
+                timeout=float(
+                    getattr(settings, "WEB_SEARCH_TOTAL_TIMEOUT", 25) or 25
+                ),
+            )
+
+            if results:
+                return {
+                    "query": query,
+                    "count": len(results),
+                    "results": results,
+                }
+
         except Exception as exc:
-            logger.exception("DuckDuckGo web search failed: %s", exc)
-            return {
-                "query": query,
-                "count": 0,
-                "results": [],
-                "error": f"Search failed: {str(exc)}",
+            logger.exception(
+                "DuckDuckGo search failed query=%r: %s",
+                query,
+                exc,
+            )
+
+        return {
+            "query": query,
+            "count": 0,
+            "results": [],
+            "error": "No usable search results returned from DuckDuckGo.",
+        }
+
+    async def _search(
+        self,
+        *,
+        query: str,
+        max_results: int,
+        search_type: str,
+        timelimit: str | None,
+        region: str,
+    ) -> list[dict[str, str]]:
+        candidate_count = min(
+            20,
+            max(max_results * 2, 8),
+        )
+
+        branches = (
+            ["web", "news"]
+            if search_type == "auto"
+            else [search_type]
+        )
+
+        tasks = [
+            asyncio.to_thread(
+                self._ddg_search,
+                branch,
+                query,
+                candidate_count,
+                timelimit,
+                region,
+            )
+            for branch in branches
+        ]
+
+        outputs = await asyncio.gather(
+            *tasks,
+            return_exceptions=True,
+        )
+
+        raw: list[dict[str, Any]] = []
+
+        for branch, output in zip(
+            branches,
+            outputs,
+            strict=True,
+        ):
+            if isinstance(output, Exception):
+                logger.warning(
+                    "DuckDuckGo %s branch failed: %s",
+                    branch,
+                    output,
+                )
+                continue
+
+            raw.extend(output)
+
+        if not raw:
+            return []
+
+        ranked = self._rank_and_dedupe(
+            query=query,
+            items=raw,
+            max_results=max_results,
+        )
+
+        # Search snippets are often too shallow for list/research questions.
+        # Enrich only the strongest results, while keeping the same response
+        # schema by placing extracted evidence into `snippet`.
+        enrich_count = min(
+            len(ranked),
+            int(
+                getattr(
+                    settings,
+                    "WEB_SEARCH_EXTRACT_RESULTS",
+                    3,
+                )
+                or 3
+            ),
+        )
+
+        if enrich_count > 0:
+            await self._enrich(
+                ranked[:enrich_count]
+            )
+
+        return ranked
+
+    def _ddg_search(
+        self,
+        search_type: str,
+        query: str,
+        max_results: int,
+        timelimit: str | None,
+        region: str,
+    ) -> list[dict[str, Any]]:
+        safesearch = (
+            getattr(
+                settings,
+                "WEB_SEARCH_SAFESEARCH",
+                "moderate",
+            )
+            or "moderate"
+        )
+
+        with DDGS(
+            timeout=self.timeout_seconds
+        ) as ddgs:
+            kwargs = {
+                "region": region,
+                "safesearch": safesearch,
+                "timelimit": timelimit,
+                "max_results": max_results,
+                "backend": "duckduckgo",
             }
 
-    async def _search_tavily(
-        self,
-        query: str,
-        api_key: str,
-        max_results: int,
-    ) -> list[dict[str, str]]:
-        url = "https://api.tavily.com/search"
-        payload = {
-            "api_key": api_key,
-            "query": query,
-            "max_results": max_results,
-            "search_depth": "basic",
-        }
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            rows = (
+                ddgs.news(query, **kwargs)
+                if search_type == "news"
+                else ddgs.text(query, **kwargs)
+            )
+
             results = []
-            for item in data.get("results", [])[:max_results]:
-                results.append(
-                    {
-                        "title": item.get("title", ""),
-                        "url": item.get("url", ""),
-                        "snippet": item.get("content", ""),
-                    }
-                )
+
+            for rank, item in enumerate(
+                rows or [],
+                start=1,
+            ):
+                title = str(
+                    item.get("title") or ""
+                ).strip()
+
+                url = str(
+                    item.get("url")
+                    or item.get("href")
+                    or item.get("link")
+                    or ""
+                ).strip()
+
+                snippet = str(
+                    item.get("body")
+                    or item.get("snippet")
+                    or item.get("description")
+                    or ""
+                ).strip()
+
+                date = str(
+                    item.get("date") or ""
+                ).strip()
+
+                source = str(
+                    item.get("source") or ""
+                ).strip()
+
+                if date:
+                    snippet = (
+                        f"Published: {date}\n{snippet}"
+                        if snippet
+                        else f"Published: {date}"
+                    )
+
+                if source:
+                    snippet = (
+                        f"Source: {source}\n{snippet}"
+                        if snippet
+                        else f"Source: {source}"
+                    )
+
+                if title and url:
+                    results.append(
+                        {
+                            "title": title,
+                            "url": url,
+                            "snippet": snippet,
+                            "_rank": rank,
+                        }
+                    )
+
             return results
 
-    async def _search_serpapi(
+    async def _enrich(
         self,
+        results: list[dict[str, str]],
+    ) -> None:
+        semaphore = asyncio.Semaphore(
+            int(
+                getattr(
+                    settings,
+                    "WEB_SEARCH_EXTRACT_CONCURRENCY",
+                    3,
+                )
+                or 3
+            )
+        )
+
+        max_chars = int(
+            getattr(
+                settings,
+                "WEB_SEARCH_EXTRACT_MAX_CHARS",
+                5000,
+            )
+            or 5000
+        )
+
+        async def enrich_one(
+            item: dict[str, str],
+        ) -> None:
+            async with semaphore:
+                try:
+                    content = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._extract_page,
+                            item["url"],
+                        ),
+                        timeout=float(self.timeout_seconds),
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Page extraction failed url=%s: %s",
+                        item.get("url"),
+                        exc,
+                    )
+                    return
+
+                content = self._clean_content(
+                    content
+                )
+
+                if not content:
+                    return
+
+                original = item.get(
+                    "snippet",
+                    "",
+                ).strip()
+
+                extracted = content[:max_chars]
+
+                item["snippet"] = (
+                    f"{original}\n\nPage content:\n{extracted}"
+                    if original
+                    else extracted
+                )
+
+        await asyncio.gather(
+            *(enrich_one(item) for item in results),
+            return_exceptions=True,
+        )
+
+    def _extract_page(
+        self,
+        url: str,
+    ) -> str:
+        with DDGS(
+            timeout=self.timeout_seconds
+        ) as ddgs:
+            result = ddgs.extract(
+                url,
+                fmt="text_markdown",
+            )
+
+        content = result.get(
+            "content",
+            "",
+        )
+
+        if isinstance(content, bytes):
+            return content.decode(
+                "utf-8",
+                errors="replace",
+            )
+
+        return str(content or "")
+
+    @classmethod
+    def _rank_and_dedupe(
+        cls,
+        *,
         query: str,
-        api_key: str,
+        items: list[dict[str, Any]],
         max_results: int,
     ) -> list[dict[str, str]]:
-        url = "https://serpapi.com/search"
-        params = {
-            "api_key": api_key,
-            "q": query,
-            "engine": "google",
-            "num": max_results,
-        }
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-            results = []
-            for item in data.get("organic_results", [])[:max_results]:
-                results.append(
+        query_terms = cls._tokens(query)
+
+        seen: set[str] = set()
+        scored: list[
+            tuple[
+                float,
+                dict[str, str],
+            ]
+        ] = []
+
+        for item in items:
+            title = str(
+                item.get("title") or ""
+            ).strip()
+
+            url = cls._canonical_url(
+                str(item.get("url") or "")
+            )
+
+            snippet = str(
+                item.get("snippet") or ""
+            ).strip()
+
+            if (
+                not title
+                or not url
+                or url in seen
+            ):
+                continue
+
+            seen.add(url)
+
+            all_terms = cls._tokens(
+                f"{title} {snippet}"
+            )
+
+            title_terms = cls._tokens(
+                title
+            )
+
+            if query_terms:
+                coverage = (
+                    len(
+                        query_terms
+                        & all_terms
+                    )
+                    / len(query_terms)
+                )
+
+                title_coverage = (
+                    len(
+                        query_terms
+                        & title_terms
+                    )
+                    / len(query_terms)
+                )
+            else:
+                coverage = 0.0
+                title_coverage = 0.0
+
+            rank = int(
+                item.get("_rank") or 100
+            )
+
+            score = (
+                coverage * 5.0
+                + title_coverage * 3.0
+                + 1.0 / max(rank, 1)
+            )
+
+            scored.append(
+                (
+                    score,
                     {
-                        "title": item.get("title", ""),
-                        "url": item.get("link", ""),
-                        "snippet": item.get("snippet", ""),
-                    }
+                        "title": title,
+                        "url": url,
+                        "snippet": snippet,
+                    },
                 )
-            return results
+            )
 
-    async def _search_duckduckgo(
-        self,
-        query: str,
-        max_results: int,
-    ) -> list[dict[str, str]]:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
+        scored.sort(
+            key=lambda row: row[0],
+            reverse=True,
+        )
 
-        # Try DuckDuckGo Lite first (cleanest and fastest without JS)
-        results: list[dict[str, str]] = []
-        try:
-            async with httpx.AsyncClient(
-                headers=headers,
-                timeout=self.timeout_seconds,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.post(
-                    "https://lite.duckduckgo.com/lite/",
-                    data={"q": query},
-                )
-                if resp.status_code == 200:
-                    tree = html.fromstring(resp.content)
-                    rows = tree.xpath("//table//tr")
-                    for i in range(len(rows)):
-                        link_nodes = rows[i].xpath('.//a[contains(@class, "result-link")]')
-                        if link_nodes:
-                            title = link_nodes[0].text_content().strip()
-                            raw_url = link_nodes[0].get("href", "")
-                            url = self._unwrap_ddg_url(raw_url)
-                            snippet = ""
-                            if i + 1 < len(rows):
-                                snip_node = rows[i + 1].xpath(
-                                    './/td[contains(@class, "result-snippet")]'
-                                )
-                                if snip_node:
-                                    snippet = snip_node[0].text_content().strip()
-                            if title and url:
-                                results.append(
-                                    {
-                                        "title": title,
-                                        "url": url,
-                                        "snippet": snippet,
-                                    }
-                                )
-                                if len(results) >= max_results:
-                                    break
-        except Exception as exc:
-            logger.warning("DuckDuckGo Lite search attempt failed: %s", exc)
-
-        if results:
-            return results
-
-        # Fallback to html.duckduckgo.com if Lite had no results
-        try:
-            async with httpx.AsyncClient(
-                headers=headers,
-                timeout=self.timeout_seconds,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.post(
-                    "https://html.duckduckgo.com/html/",
-                    data={"q": query},
-                )
-                if resp.status_code == 200:
-                    tree = html.fromstring(resp.content)
-                    for node in tree.xpath(
-                        '//div[contains(@class, "web-result") or contains(@class, "result__body")]'
-                    )[:max_results]:
-                        title_nodes = node.xpath(".//h2//text()")
-                        snippet_nodes = node.xpath(
-                            './/a[contains(@class, "result__snippet")]//text()'
-                        )
-                        link_nodes = node.xpath(
-                            './/a[contains(@class, "result__url")]/@href'
-                        )
-                        title = "".join(title_nodes).strip()
-                        snippet = "".join(snippet_nodes).strip()
-                        raw_url = link_nodes[0].strip() if link_nodes else ""
-                        url = self._unwrap_ddg_url(raw_url)
-                        if title and url:
-                            results.append(
-                                {
-                                    "title": title,
-                                    "url": url,
-                                    "snippet": snippet,
-                                }
-                            )
-        except Exception as exc:
-            logger.warning("DuckDuckGo HTML search attempt failed: %s", exc)
-
-        return results
+        return [
+            result
+            for _, result
+            in scored[:max_results]
+        ]
 
     @staticmethod
-    def _unwrap_ddg_url(raw_url: str) -> str:
-        """
-        Unwraps redirected DuckDuckGo links (/l/?uddg=...).
-        """
-        if not raw_url:
-            return ""
-        if "uddg=" in raw_url:
+    def _parse_arguments(
+        arguments: dict[str, Any] | str,
+    ) -> dict[str, Any]:
+        if isinstance(arguments, dict):
+            parsed = dict(arguments)
+
+        elif isinstance(arguments, str):
+            raw = arguments.strip()
+            raw = re.sub(
+                r"^```(?:json)?\s*|\s*```$",
+                "",
+                raw,
+                flags=re.IGNORECASE,
+            )
+
             try:
-                parsed = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
-                if "uddg" in parsed:
-                    return parsed["uddg"][0]
-            except Exception:
-                pass
-        return raw_url
+                loaded = json.loads(raw)
+
+                parsed = (
+                    loaded
+                    if isinstance(
+                        loaded,
+                        dict,
+                    )
+                    else {"query": raw}
+                )
+
+            except json.JSONDecodeError:
+                parsed = {
+                    "query": raw
+                }
+
+        else:
+            return {}
+
+        for key in (
+            "parameters",
+            "arguments",
+            "args",
+        ):
+            nested = parsed.get(key)
+
+            if isinstance(
+                nested,
+                dict,
+            ):
+                return nested
+
+        return parsed
+
+    @staticmethod
+    def _tokens(
+        text: str,
+    ) -> set[str]:
+        return {
+            token
+            for token in re.findall(
+                r"[a-z0-9][a-z0-9._+-]*",
+                text.lower(),
+            )
+            if len(token) > 1
+        }
+
+    @staticmethod
+    def _clean_content(
+        text: str,
+    ) -> str:
+        text = str(
+            text or ""
+        ).replace(
+            "\x00",
+            "",
+        )
+
+        text = re.sub(
+            r"[ \t]+",
+            " ",
+            text,
+        )
+
+        text = re.sub(
+            r"\n{3,}",
+            "\n\n",
+            text,
+        )
+
+        return text.strip()
+
+    @staticmethod
+    def _canonical_url(
+        url: str,
+    ) -> str:
+        try:
+            parts = urlsplit(
+                url.strip()
+            )
+
+            if (
+                parts.scheme
+                not in {"http", "https"}
+                or not parts.netloc
+            ):
+                return ""
+
+            query = [
+                (key, value)
+                for key, value
+                in parse_qsl(
+                    parts.query,
+                    keep_blank_values=True,
+                )
+                if not key.lower().startswith(
+                    "utm_"
+                )
+                and key.lower()
+                not in {
+                    "gclid",
+                    "fbclid",
+                    "msclkid",
+                }
+            ]
+
+            return urlunsplit(
+                (
+                    parts.scheme.lower(),
+                    parts.netloc.lower(),
+                    parts.path or "/",
+                    urlencode(query),
+                    "",
+                )
+            )
+
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _int(
+        value: Any,
+        *,
+        default: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        try:
+            value = int(value)
+        except (
+            TypeError,
+            ValueError,
+        ):
+            value = default
+
+        return max(
+            minimum,
+            min(
+                maximum,
+                value,
+            ),
+        )

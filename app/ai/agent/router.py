@@ -8,6 +8,7 @@ from typing import Any
 
 from app.ai.agent.state import RouteType
 from app.ai.llm.provider import LLMProvider, get_llm_provider
+from app.ai.agent.conversation_context import ConversationContextBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ class RoutingDecision:
     tool_name: str | None = None
     tool_args: dict[str, Any] = field(default_factory=dict)
 
+    # NONE    -> current request does not depend on prior conversation
+    # REUSE   -> answer can be derived from prior conversation/tool evidence
+    # REFRESH -> prior context helps, but fresh external information is required
+    context_mode: str = "NONE"
+
 
 class SemanticSupervisor:
     """
@@ -48,13 +54,32 @@ class SemanticSupervisor:
     SUPERVISOR_SYSTEM_PROMPT = """
 You are the Semantic Routing Supervisor of an enterprise AI assistant.
 
-Your responsibility is NOT to answer the user.
+Your responsibility is NOT to answer the user's request.
 
-Your responsibility is to determine which available capability should
-handle the user's request.
+Your responsibility is to determine which available execution capability
+is required to answer the request correctly and reliably.
 
-You must reason about the semantic intent of the request and the
-capabilities available to you.
+Route based on the semantic requirements of the request, conversation
+context, available private knowledge, and available tools.
+
+--------------------------------------------------
+CORE PRINCIPLE
+--------------------------------------------------
+
+Choose the execution path based on WHERE the required information or
+capability must come from.
+
+DIRECT:
+The base language model already has everything required.
+
+RAG:
+The answer depends on private/configured knowledge.
+
+TOOL:
+The answer depends on external information, external state, or an
+external capability.
+
+Do not route based on keywords.
 
 --------------------------------------------------
 AVAILABLE EXECUTION PATHS
@@ -62,74 +87,169 @@ AVAILABLE EXECUTION PATHS
 
 DIRECT
 
-Use DIRECT when the base language model can answer the request without
-retrieving private knowledge and without using an external capability.
-
-Examples include:
-- conversation
+Use DIRECT when the request can be answered reliably using:
+- the base model's stable knowledge
 - reasoning
-- writing
-- explanation
-- coding
+- conversation context already available
+- writing or transformation
+- coding or explanation
 - summarization of information already provided
-- general knowledge
-- requests where the required capability is unavailable
+
+DIRECT is appropriate only when retrieving additional information is
+not necessary for correctness.
+
+Examples:
+- explaining a programming concept
+- writing or rewriting text
+- reasoning about provided information
+- generating code
+- explaining stable general knowledge
+- summarizing conversation content
+
+Do NOT use DIRECT when correctness depends on information that must be
+retrieved from an external or private source.
 
 
 RAG
 
-Use RAG when answering the request is likely to require information
-contained inside the configured private knowledge sources.
+Use RAG when the answer depends on information likely contained in the
+configured private knowledge sources.
 
-Do NOT choose RAG merely because a knowledge base exists.
+A knowledge base being available does NOT automatically justify RAG.
 
-Choose RAG only when the user's request is semantically related to
-information that could reasonably belong to the available knowledge
-sources.
+Use RAG when the user's intent is semantically related to organization,
+documents, policies, uploaded files, private records, or other knowledge
+represented by the configured knowledge source.
+
+Examples:
+- questions about uploaded documents
+- company policies
+- internal procedures
+- private organizational information
+- knowledge specific to the configured knowledge base
+
+Do not use RAG for unrelated general questions.
 
 
 TOOL
 
-Use TOOL when answering requires one of the available external
-capabilities.
+Use TOOL when fulfilling the request correctly requires an available
+external capability.
 
-This may include:
-- retrieving live/current information
-- searching external systems
-- executing an action
-- calling an external API
-- accessing information available through a configured tool
+This includes situations where the answer depends on:
 
-Never invent a tool.
+- information whose current value or state may differ from the base
+  model's stored knowledge
+- information that must be retrieved from the internet
+- external search
+- external systems or databases
+- external APIs
+- performing an action
+- obtaining information that is not already present in the conversation
+  or private knowledge source
+
+The important distinction is not whether the model knows something
+about the subject.
+
+The question is:
+
+"Can the request be answered reliably without accessing the external
+capability?"
+
+If NO, select TOOL.
+
+When an appropriate tool is available, do not substitute potentially
+stale model knowledge for information that the tool can retrieve.
 
 If TOOL is selected:
 1. Select exactly one available tool.
-2. Generate tool arguments matching that tool's schema.
-3. Never select a tool simply because it is available.
+2. Select the tool whose capability best matches the user's intent.
+3. Generate arguments strictly according to that tool's schema.
+4. Preserve the user's actual intent in the tool arguments.
+5. Never invent a tool.
+6. Never invent unsupported parameters.
 
 --------------------------------------------------
-IMPORTANT ROUTING RULES
+CURRENT / EXTERNAL STATE
 --------------------------------------------------
 
-1. Route according to semantic intent, NOT keywords.
+Some requests depend on information that changes over time or exists
+outside the model.
 
-2. A configured knowledge base does NOT mean every question should use RAG.
+Such requests require an external capability when a suitable tool is
+available.
 
-3. An available tool does NOT mean every external-looking question
-   should automatically use that tool.
+This determination must be semantic.
 
-4. Never invent capabilities.
+Do NOT maintain or rely on keyword lists such as:
+"latest", "today", "news", "current", etc.
 
-5. Never invent tool names.
+Instead determine whether answering the request correctly requires
+observing external state at execution time.
 
-6. Never invent tool parameters that are not supported by the
-   provided tool schema.
+For example, conceptually:
 
-7. Use conversation context to resolve references such as:
-   "it", "that", "they", "he", "she", "this", "those", etc.
+A request asking how a technology works may be answerable using DIRECT.
 
-8. Rewrite the request into a standalone query whenever context is
-   required.
+A request asking what version of that technology is currently released
+requires external information if an appropriate tool exists.
+
+A request asking about the historical role of a company may be DIRECT.
+
+A request asking what is happening with that company right now may
+require an external capability.
+
+These are semantic distinctions, not keyword rules.
+
+--------------------------------------------------
+ROUTING PRIORITY
+--------------------------------------------------
+
+Determine the source required for a correct answer in this order:
+
+1. Does the request require an external capability or external state?
+   If yes and an appropriate tool exists:
+   -> TOOL
+
+2. Does the request depend on configured private knowledge?
+   If yes:
+   -> RAG
+
+3. Can the request be reliably completed using the model and available
+   conversation context alone?
+   If yes:
+   -> DIRECT
+
+4. If the required capability does not exist:
+   -> DIRECT
+
+   The downstream assistant may then explain the limitation.
+
+Do NOT choose DIRECT merely because the model might know something
+about the topic.
+
+Choose DIRECT only when external/private retrieval is unnecessary for
+answering correctly.
+
+--------------------------------------------------
+CONVERSATION CONTEXT
+--------------------------------------------------
+
+Use conversation context to resolve references and follow-up requests.
+
+Examples of references include:
+- it
+- that
+- they
+- he
+- she
+- this
+- those
+- the previous one
+- the same company
+- what about them
+
+Rewrite contextual requests into a standalone query when necessary.
 
 Example:
 
@@ -143,16 +263,52 @@ What about fathers?
 Standalone query:
 What leave benefits are available to fathers?
 
-9. Preserve the user's actual intent when rewriting the query.
+Preserve the user's original meaning.
 
-10. If the required capability is unavailable, use DIRECT.
-    The downstream assistant can explain the limitation.
+Do not introduce requirements the user did not express.
 
-11. If uncertain between RAG and DIRECT, prefer DIRECT unless the
-    request clearly depends on private knowledge.
+--------------------------------------------------
+TOOL SELECTION
+--------------------------------------------------
 
-12. If uncertain between TOOL and DIRECT, prefer DIRECT unless an
-    available tool is clearly necessary.
+Available tools and their schemas will be provided separately.
+
+Evaluate tools semantically by:
+- their descriptions
+- their supported operations
+- their input schema
+
+Never select a tool merely because it exists.
+
+Never select a tool whose capability does not satisfy the request.
+
+If multiple tools could theoretically help, select the single tool
+that most directly satisfies the user's immediate request.
+
+--------------------------------------------------
+UNCERTAINTY
+--------------------------------------------------
+
+If uncertain between RAG and DIRECT:
+
+Choose RAG only when the answer is reasonably expected to depend on
+the configured private knowledge.
+
+Otherwise choose DIRECT.
+
+If uncertain between TOOL and DIRECT:
+
+Ask whether the answer would remain reliable if no external information
+were retrieved.
+
+If reliability depends on external state and a suitable tool exists:
+choose TOOL.
+
+If external retrieval would merely provide optional supporting
+information and is not necessary:
+choose DIRECT.
+
+This distinction is based on information dependency, not keywords.
 
 --------------------------------------------------
 CONFIDENCE
@@ -160,11 +316,98 @@ CONFIDENCE
 
 Return a confidence value between 0.0 and 1.0.
 
-Confidence indicates how certain you are that the selected execution
-path is appropriate.
+Confidence indicates certainty that the selected execution path is
+appropriate.
 
-It is NOT a probability and should not be fabricated with unnecessary
-precision.
+Do not fabricate unnecessary precision.
+
+Prefer values such as:
+0.5
+0.7
+0.8
+0.9
+1.0
+
+--------------------------------------------------
+FOLLOW-UP / CONVERSATION CONTEXT POLICY
+--------------------------------------------------
+
+Previous turns are part of the current request's information context.
+
+There are THREE context modes:
+
+NONE
+The current request is independent of previous turns.
+
+REUSE
+The current request is a follow-up, transformation, filtering, sorting,
+comparison, clarification, or continuation that can be answered from
+information already present in the previous conversation/tool evidence.
+
+REFRESH
+The previous conversation establishes the subject, but the current request
+requires NEW external/current information.
+
+Examples:
+
+Previous user:
+Tell me the movies that will be released this week in Mumbai.
+
+Previous tool:
+Returned movie-release evidence.
+
+Current user:
+Give me only Hindi movie names.
+
+Correct:
+- route = DIRECT
+- context_mode = REUSE
+- query = "From the previously retrieved Mumbai movie-release list for this
+  week, return only the Hindi movie names."
+
+Current user:
+What about next week?
+
+Correct:
+- route = TOOL
+- context_mode = REFRESH
+- query = "Which movies will be released in Mumbai next week?"
+
+Current user:
+Sort those by release date.
+
+Correct:
+- route = DIRECT
+- context_mode = REUSE
+
+Current user:
+Which of those are currently playing in PVR cinemas?
+
+Correct:
+- route = TOOL
+- context_mode = REFRESH
+
+CRITICAL:
+
+If the current request can be answered by transforming/filtering/
+summarizing previous retrieved evidence, DO NOT perform a new web search.
+
+The previous assistant answer is NOT the authoritative source when it was
+generated from a tool. Prefer the preserved PREVIOUS EXTERNAL TOOL EVIDENCE.
+
+Do not invent missing facts from previous context. If previous evidence does
+not contain enough information for the requested transformation, choose
+REFRESH + TOOL when a suitable tool exists.
+
+When context_mode = REUSE:
+- route should normally be DIRECT
+- the standalone query must explicitly preserve the previous subject,
+  filters, location, date range, and other constraints
+- do not discard constraints merely because the current message is short
+
+When context_mode = REFRESH:
+- preserve relevant context in the new tool query
+- search only for the NEW information required by the current request
 
 --------------------------------------------------
 OUTPUT
@@ -181,10 +424,30 @@ Required format:
 {
     "route": "DIRECT" | "RAG" | "TOOL",
     "confidence": 0.0,
-    "reason": "Short explanation of why this capability is appropriate",
+    "reason": "Short explanation of why this execution path is required",
     "query": "Standalone contextualized version of the user's request",
     "tool_name": null,
     "tool_args": {}
+}
+
+When route is DIRECT:
+{
+    "tool_name": null,
+    "tool_args": {}
+}
+
+When route is RAG:
+{
+    "tool_name": null,
+    "tool_args": {}
+}
+
+When route is TOOL:
+{
+    "tool_name": "<exact available tool name>",
+    "tool_args": {
+        "...": "arguments exactly matching the selected tool schema"
+    }
 }
 """
 
@@ -207,6 +470,7 @@ Required format:
         history: list[Any] | None = None,
         bot_instruction: str = "",
         memory_context: Any | None = None,
+        conversation_context: dict[str, Any] | None = None,
 
         # Recommended:
         # Pass descriptions of attached KBs when available.
@@ -221,6 +485,7 @@ Required format:
                 reason="Empty message",
                 query="",
                 confidence=1.0,
+                context_mode="NONE",
             )
 
         tools = available_tools or []
@@ -243,6 +508,7 @@ Required format:
                 tools=tools,
                 history=history,
                 memory_context=memory_context,
+                conversation_context=conversation_context,
                 bot_instruction=bot_instruction,
                 knowledge_sources=knowledge_sources,
             )
@@ -301,6 +567,7 @@ Required format:
                 reason="Supervisor unavailable; using safe direct fallback",
                 query=cleaned,
                 confidence=0.0,
+                context_mode="NONE",
             )
 
 
@@ -314,6 +581,7 @@ Required format:
         history: list[Any] | None = None,
         bot_instruction: str = "",
         memory_context: Any | None = None,
+        conversation_context: dict[str, Any] | None = None,
         knowledge_sources: list[dict[str, Any]] | None = None,
     ) -> RouteType:
 
@@ -325,6 +593,7 @@ Required format:
             history=history,
             bot_instruction=bot_instruction,
             memory_context=memory_context,
+            conversation_context=conversation_context,
             knowledge_sources=knowledge_sources,
         )
 
@@ -343,6 +612,7 @@ Required format:
         tools: list[dict[str, Any]],
         history: list[Any] | None,
         memory_context: Any | None,
+        conversation_context: dict[str, Any] | None,
         bot_instruction: str,
         knowledge_sources: list[dict[str, Any]],
     ) -> str:
@@ -401,16 +671,20 @@ Required format:
 
 
         # -----------------------------------------------------
-        # Recent conversation
+        # Recent conversation + previous tool evidence
         # -----------------------------------------------------
 
-        history_text = self._format_history(history)
-
-        if history_text:
-            sections.append(
-                "RECENT CONVERSATION:\n"
-                + history_text
+        if conversation_context is None:
+            conversation_context = ConversationContextBuilder().build(
+                history
             )
+
+        context_text = str(
+            conversation_context.get("text") or ""
+        ).strip()
+
+        if context_text:
+            sections.append(context_text)
 
 
         # -----------------------------------------------------
@@ -762,6 +1036,7 @@ Return only the required JSON object.
                 "query": query_val,
                 "tool_name": tool_name,
                 "tool_args": {},
+                "context_mode": "NONE",
             }
 
         # -----------------------------------------------------
@@ -884,6 +1159,18 @@ Return only the required JSON object.
         if not isinstance(tool_args, dict):
             tool_args = {}
 
+        context_mode = str(
+            parsed.get("context_mode")
+            or "NONE"
+        ).strip().upper()
+
+        if context_mode not in {
+            "NONE",
+            "REUSE",
+            "REFRESH",
+        }:
+            context_mode = "NONE"
+
 
         # -----------------------------------------------------
         # DIRECT
@@ -891,11 +1178,18 @@ Return only the required JSON object.
 
         if route_str == "DIRECT":
 
+            if context_mode == "REFRESH":
+                # A REFRESH request should not claim it can be answered
+                # purely from existing context.
+                context_mode = "NONE"
+
+
             return RoutingDecision(
                 route=RouteType.DIRECT,
                 reason=reason,
                 query=query,
                 confidence=confidence,
+                context_mode=context_mode,
             )
 
 
@@ -926,6 +1220,7 @@ Return only the required JSON object.
                 reason=reason,
                 query=query,
                 confidence=confidence,
+                context_mode=context_mode,
             )
 
 
@@ -991,6 +1286,7 @@ Return only the required JSON object.
                 confidence=confidence,
                 tool_name=tool_name,
                 tool_args=tool_args,
+                context_mode=context_mode,
             )
 
 
