@@ -1,5 +1,4 @@
 from __future__ import annotations
-from huggingface_hub.inference._generated.types import zero_shot_image_classification
 
 import json
 import logging
@@ -13,6 +12,7 @@ from app.ai.agent.state import RouteType
 from app.ai.agent.tools import ToolRegistry
 from app.ai.llm.provider import LLMProvider, LLMResponse
 from app.ai.llm.sources import SourceCandidate
+from app.ai.rag.agentic import EvidenceGrader
 from app.config import settings
 from app.ai.agent.conversation_context import ConversationContextBuilder
 
@@ -66,6 +66,15 @@ class ChatAgentState(TypedDict, total=False):
     distinct_sources: list[dict[str, Any]]
     source_candidates: list[SourceCandidate]
 
+    # Agentic retrieval loop
+    rag_round: int
+    rag_queries: list[str]
+    rag_pending_queries: list[str]
+    rag_seen_ids: list[str]
+    rag_evidence: list[Any]
+    rag_decision: str
+    rag_trace: list[dict[str, Any]]
+
     # Tools
     tool_calls: list[dict[str, Any]]
     tool_results: list[dict[str, Any]]
@@ -86,7 +95,9 @@ class ChatAgentGraph:
           -> context_builder
           -> supervisor
              -> DIRECT -> generate
-             -> RAG    -> retrieve -> generate / TOOL fallback
+             -> RAG    -> retrieve -> grade_evidence
+                            -> retrieve (refined query, bounded rounds)
+                            -> generate / TOOL fallback
              -> TOOL   -> tool_dispatch -> generate
           -> END
 
@@ -140,6 +151,7 @@ Briefly tell the user that live information could not be retrieved reliably.
         self.llm = llm_provider
         self.tool_registry = tool_registry
         self.guardrails = guardrail_service
+        self.grader = EvidenceGrader(llm_provider)
         self.context_builder = ConversationContextBuilder(
             max_turns=8,
             max_message_chars=1500,
@@ -158,6 +170,7 @@ Briefly tell the user that live information could not be retrieved reliably.
         workflow.add_node("context_builder", self._context_builder_node)
         workflow.add_node("supervisor", self._supervisor_node)
         workflow.add_node("retrieve", self._retrieve_node)
+        workflow.add_node("grade_evidence", self._grade_evidence_node)
         workflow.add_node("tool_dispatch", self._tool_node)
         workflow.add_node("generate", self._generate_node)
 
@@ -174,10 +187,13 @@ Briefly tell the user that live information could not be retrieved reliably.
             },
         )
 
+        workflow.add_edge("retrieve", "grade_evidence")
+
         workflow.add_conditional_edges(
-            "retrieve",
+            "grade_evidence",
             self._kb_relevance_gate,
             {
+                "retrieve": "retrieve",
                 "generate": "generate",
                 "tool": "tool_dispatch",
             },
@@ -268,54 +284,62 @@ Briefly tell the user that live information could not be retrieved reliably.
     # RAG
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _rag_budget(state: ChatAgentState) -> int | None:
+        context_window = state.get("context_window")
+        if not context_window:
+            return None
+        max_generation_tokens = state.get("max_tokens") or 512
+        return max(
+            250,
+            min(
+                1500,
+                int((context_window - max_generation_tokens) * 0.40),
+            ),
+        )
+
     async def _retrieve_node(
         self,
         state: ChatAgentState,
     ) -> dict[str, Any]:
+        """
+        One retrieval round. Round 1 searches the supervisor's standalone
+        query (plus the raw message when it differs); later rounds search
+        the grader's refined query and skip chunks already seen.
+        """
         db = state.get("db_session")
 
         if not db or not state.get("has_kb"):
             return {
                 "retrieval": None,
                 "distinct_sources": [],
+                "rag_decision": "done",
             }
 
+        rag_round = state.get("rag_round", 0) + 1
+        seen_ids = list(state.get("rag_seen_ids") or [])
+
+        if rag_round == 1:
+            primary = state.get("resolved_query") or state["query"]
+            extra = [state["query"]] if state["query"] != primary else []
+        else:
+            pending = list(state.get("rag_pending_queries") or [])
+            primary, extra = pending[0], pending[1:]
+
+        queries = list(state.get("rag_queries") or []) + [primary, *extra]
+
         try:
-            context_window = state.get("context_window")
-            max_generation_tokens = state.get("max_tokens") or 512
-
-            rag_budget = None
-            if context_window:
-                rag_budget = max(
-                    250,
-                    min(
-                        1500,
-                        int(
-                            (
-                                context_window
-                                - max_generation_tokens
-                            )
-                            * 0.40
-                        ),
-                    ),
-                )
-
-            query = (
-                state.get("resolved_query")
-                or state["query"]
-            )
-
             retrieval = await self.retrieval_service.retrieve_for_bot(
                 db,
                 user_id=state["user_id"],
                 bot_id=state["bot_id"],
-                query=query,
+                query=primary,
+                queries=extra,
                 top_k=settings.DEFAULT_TOP_K,
                 score_threshold=settings.DEFAULT_SCORE_THRESHOLD,
-                context_budget=rag_budget,
+                context_budget=self._rag_budget(state),
+                exclude_ids=set(seen_ids),
             )
-
-            safe_retrieval = retrieval
 
             if (
                 retrieval
@@ -323,8 +347,6 @@ Briefly tell the user that live information could not be retrieved reliably.
                 and self.guardrails
             ):
                 from app.ai.guardrails.base import GuardrailStage
-
-                safe_chunks = []
 
                 for chunk in retrieval.chunks:
                     evaluation = await self.guardrails.evaluate(
@@ -335,37 +357,163 @@ Briefly tell the user that live information could not be retrieved reliably.
                         stage=GuardrailStage.RETRIEVAL,
                         text=chunk.text,
                     )
-
                     chunk.text = evaluation.final_text
-                    safe_chunks.append(chunk)
-
-                safe_retrieval.chunks = safe_chunks
-
-            distinct_sources = (
-                safe_retrieval.get_distinct_sources()
-                if safe_retrieval
-                else []
-            )
-
-            return {
-                "retrieval": safe_retrieval,
-                "distinct_sources": distinct_sources,
-            }
 
         except Exception as exc:
             logger.exception(
                 "RAG retrieval failed: %s",
                 exc,
             )
-            return {
-                "retrieval": None,
-                "distinct_sources": [],
+            retrieval = None
+
+        if retrieval:
+            seen_ids.extend(chunk.id for chunk in retrieval.chunks)
+
+        return {
+            "retrieval": retrieval,
+            "rag_round": rag_round,
+            "rag_queries": queries,
+            "rag_pending_queries": [],
+            "rag_seen_ids": seen_ids,
+        }
+
+    # Grader says "none relevant" but the search was this confident:
+    # keep the top hits rather than trust a small model's false negative.
+    HIGH_CONFIDENCE_SCORE = 0.75
+
+    async def _grade_evidence_node(
+        self,
+        state: ChatAgentState,
+    ) -> dict[str, Any]:
+        """
+        Agentic step: keep only passages that help, decide whether they
+        answer the question, and request another round with a refined
+        query when information is missing.
+        """
+        retrieval = state.get("retrieval")
+        new_chunks = list(getattr(retrieval, "chunks", None) or [])
+        evidence = list(state.get("rag_evidence") or [])
+        rag_round = state.get("rag_round", 1)
+        queries = list(state.get("rag_queries") or [])
+        trace = list(state.get("rag_trace") or [])
+
+        new_chunks = self._drop_covered(evidence, new_chunks)
+        passages = evidence + new_chunks
+        decision = "done"
+
+        if not settings.RAG_AGENTIC or not new_chunks:
+            kept = passages
+            grade = None
+        else:
+            question = state.get("resolved_query") or state["query"]
+            grade = await self.grader.grade(
+                question=question,
+                passages=passages,
+                model=state.get("model_key", ""),
+                previous_queries=queries,
+            )
+
+            kept = [passages[i] for i in grade.relevant]
+
+            if not kept and grade.answerable != "no":
+                # Inconsistent grade: do not discard evidence.
+                kept = passages
+            elif not kept:
+                kept = [
+                    chunk
+                    for chunk in passages
+                    if chunk.score >= self.HIGH_CONFIDENCE_SCORE
+                ][:2]
+
+            known = {" ".join(q.lower().split()) for q in queries}
+            refine = (
+                grade.parsed
+                and grade.answerable != "yes"
+                and grade.next_query
+                and " ".join(grade.next_query.lower().split()) not in known
+                and rag_round < settings.RAG_MAX_ROUNDS
+            )
+            if refine:
+                decision = "refine"
+
+        trace.append(
+            {
+                "round": rag_round,
+                "queries": (getattr(retrieval, "diagnostics", {}) or {}).get("queries"),
+                "retrieved": len(new_chunks),
+                "kept": len(kept),
+                "grade": grade.as_dict() if grade else None,
+                "decision": decision,
             }
+        )
+
+        logger.info(
+            "Agentic RAG round %s: retrieved=%s kept=%s decision=%s grade=%s",
+            rag_round,
+            len(new_chunks),
+            len(kept),
+            decision,
+            grade.as_dict() if grade else None,
+        )
+
+        final = self._evidence_result(state, retrieval, kept, trace)
+
+        return {
+            "retrieval": final,
+            "distinct_sources": final.get_distinct_sources() if final else [],
+            "rag_evidence": kept,
+            "rag_decision": decision,
+            "rag_pending_queries": [grade.next_query] if decision == "refine" else [],
+            "rag_trace": trace,
+        }
+
+    @staticmethod
+    def _drop_covered(evidence: list[Any], chunks: list[Any]) -> list[Any]:
+        """Skip new passages whose chunks are already inside kept evidence."""
+        covered: set[tuple[str, int]] = set()
+        for passage in evidence:
+            for index in passage.metadata.get("chunk_indexes") or [passage.chunk_index]:
+                if index is not None:
+                    covered.add((str(passage.document_id), index))
+
+        fresh = []
+        for chunk in chunks:
+            indexes = chunk.metadata.get("chunk_indexes") or [chunk.chunk_index]
+            if indexes and indexes != [None] and all(
+                (str(chunk.document_id), i) in covered for i in indexes
+            ):
+                continue
+            fresh.append(chunk)
+        return fresh
+
+    @staticmethod
+    def _evidence_result(
+        state: ChatAgentState,
+        retrieval: Any,
+        chunks: list[Any],
+        trace: list[dict[str, Any]],
+    ) -> Any:
+        if retrieval is None and not chunks:
+            return None
+
+        from app.ai.rag.retrieval import RetrievalResult
+
+        return RetrievalResult(
+            query=state.get("resolved_query") or state["query"],
+            chunks=chunks,
+            knowledge_base_ids=list(getattr(retrieval, "knowledge_base_ids", []) or []),
+            total_results=len(chunks),
+            diagnostics={"rounds": trace},
+        )
 
     def _kb_relevance_gate(
         self,
         state: ChatAgentState,
-    ) -> Literal["generate", "tool"]:
+    ) -> Literal["retrieve", "generate", "tool"]:
+        if state.get("rag_decision") == "refine":
+            logger.info("Evidence incomplete -> refining retrieval")
+            return "retrieve"
+
         retrieval = state.get("retrieval")
 
         has_chunks = bool(

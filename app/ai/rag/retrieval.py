@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import math
 import re
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.repositories.bot_repository import BotRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
+from app.ai.rag.sparse import BM25SparseEncoder
 from app.ai.rag.vector_store import VectorStoreService
 
 from app.core.exceptions import (
@@ -62,13 +65,19 @@ class RetrievalResult:
 
     total_results: int = 0
 
+    # Queries run, candidate counts, gating decisions (observability).
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
     def get_distinct_sources(self) -> list[DistinctSource]:
         sources_map: dict[uuid.UUID, DistinctSource] = {}
 
         for chunk in self.chunks:
             doc_id = chunk.document_id
+            chunk_pages = chunk.metadata.get("pages") or (
+                [chunk.page] if chunk.page is not None else []
+            )
+
             if doc_id not in sources_map:
-                pages = [chunk.page] if chunk.page is not None else []
                 preview = chunk.text[:250].strip() if chunk.text else None
                 if preview and len(chunk.text) > 250:
                     preview += "..."
@@ -78,7 +87,7 @@ class RetrievalResult:
                     knowledge_base_id=chunk.knowledge_base_id,
                     file_name=chunk.file_name,
                     page=chunk.page,
-                    pages=pages,
+                    pages=sorted(set(chunk_pages)),
                     score=round(chunk.score, 4),
                     chunk_count=1,
                     content_preview=preview,
@@ -97,9 +106,7 @@ class RetrievalResult:
                             preview += "..."
                         src.content_preview = preview
 
-                if chunk.page is not None and chunk.page not in src.pages:
-                    src.pages.append(chunk.page)
-                    src.pages.sort()
+                src.pages = sorted(set(src.pages) | set(chunk_pages))
 
         return sorted(
             sources_map.values(),
@@ -108,7 +115,67 @@ class RetrievalResult:
         )
 
 
+@dataclass
+class _Candidate:
+    match: dict[str, Any]
+    rrf: float = 0.0
+    dense: float | None = None
+    coverage: float = 0.0
+    rerank: float | None = None
+    terms: set[str] = field(default_factory=set)
+
+    @property
+    def id(self) -> str:
+        return self.match["id"]
+
+
+# ---------------------------------------------------------
+# Optional cross-encoder
+# ---------------------------------------------------------
+
+_reranker: Any | None = None
+_reranker_failed = False
+
+
+def _get_reranker() -> Any | None:
+    global _reranker, _reranker_failed
+
+    model_name = settings.RAG_RERANKER_MODEL
+    if not model_name or _reranker_failed:
+        return None
+
+    if _reranker is None:
+        try:
+            from sentence_transformers import CrossEncoder
+
+            _reranker = CrossEncoder(model_name, max_length=512)
+        except Exception as exc:
+            _reranker_failed = True
+            logger.warning("Reranker %s unavailable: %s", model_name, exc)
+            return None
+
+    return _reranker
+
+
 class RetrievalService:
+    """
+    Hybrid retrieval tuned for large corpora and small LLM context windows.
+
+    1. Every query (original + agent refinements) runs a dense and a BM25
+       search in one batched Qdrant request.
+    2. Ranks are fused with reciprocal rank fusion across all lists.
+    3. Candidates must be semantically close (dense cosine) or contain
+       most query terms verbatim; nothing else reaches the LLM.
+    4. Optional cross-encoder rerank, then near-duplicate removal and a
+       per-document cap for diversity.
+    5. Hits are expanded with neighbouring chunks into coherent passages
+       ("small-to-big"), within the caller's context budget.
+    """
+
+    RRF_K = 60
+
+    # Max characters of one expanded passage.
+    MAX_PASSAGE_CHARS = 2400
 
     def __init__(
         self,
@@ -118,10 +185,45 @@ class RetrievalService:
             vector_store
             or VectorStoreService()
         )
+        self.encoder = getattr(
+            self.vector_store,
+            "sparse_encoder",
+            None,
+        ) or BM25SparseEncoder()
 
     # =====================================================
     # RETRIEVE FOR BOT
     # =====================================================
+
+    async def resolve_knowledge_base_ids(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        bot_id: uuid.UUID,
+    ) -> list[uuid.UUID]:
+
+        bot = await BotRepository.get_owned_bot(
+            db,
+            bot_id=bot_id,
+            user_id=user_id,
+        )
+
+        if not bot:
+            raise BotNotFoundException()
+
+        kb_links = await KnowledgeRepository.list_for_bot(
+            db,
+            bot_id,
+        )
+
+        # Security: only use KBs owned by this user.
+        return [
+            link.knowledge_base.id
+            for link in kb_links or []
+            if link.knowledge_base
+            and link.knowledge_base.user_id == user_id
+        ]
 
     async def retrieve_for_bot(
         self,
@@ -133,59 +235,17 @@ class RetrievalService:
         top_k: int = 5,
         score_threshold: float | None = None,
         context_budget: int | None = None,
+        queries: list[str] | None = None,
+        document_ids: list[uuid.UUID] | None = None,
+        exclude_ids: set[str] | None = None,
+        knowledge_base_ids: list[uuid.UUID] | None = None,
     ) -> RetrievalResult:
 
-        # ---------------------------------------------
-        # Verify bot ownership
-        # ---------------------------------------------
-
-        bot = await BotRepository.get_owned_bot(
-            db,
-            bot_id=bot_id,
-            user_id=user_id,
-        )
-
-        if not bot:
-            raise BotNotFoundException()
-
-        # ---------------------------------------------
-        # Resolve KBs attached to bot
-        # ---------------------------------------------
-
-        kb_links = (
-            await KnowledgeRepository.list_for_bot(
+        if knowledge_base_ids is None:
+            knowledge_base_ids = await self.resolve_knowledge_base_ids(
                 db,
-                bot_id,
-            )
-        )
-
-        if not kb_links:
-            return RetrievalResult(
-                query=query,
-                chunks=[],
-                knowledge_base_ids=[],
-                total_results=0,
-            )
-
-        # ---------------------------------------------
-        # Security:
-        # only use KBs owned by this user.
-        # ---------------------------------------------
-
-        knowledge_base_ids = []
-
-        for link in kb_links:
-
-            kb = link.knowledge_base
-
-            if not kb:
-                continue
-
-            if kb.user_id != user_id:
-                continue
-
-            knowledge_base_ids.append(
-                kb.id
+                user_id=user_id,
+                bot_id=bot_id,
             )
 
         if not knowledge_base_ids:
@@ -196,122 +256,423 @@ class RetrievalService:
                 total_results=0,
             )
 
-        # ---------------------------------------------
-        # Search a broader pool of candidates
-        # to ensure distinct reference files are found.
-        # ---------------------------------------------
-
-        search_limit = max(
-            top_k * 4,
-            20,
+        return await self.retrieve(
+            user_id=user_id,
+            knowledge_base_ids=knowledge_base_ids,
+            query=query,
+            top_k=top_k,
+            score_threshold=score_threshold,
+            context_budget=context_budget,
+            queries=queries,
+            document_ids=document_ids,
+            exclude_ids=exclude_ids,
         )
 
+    async def retrieve(
+        self,
+        *,
+        user_id: uuid.UUID,
+        knowledge_base_ids: list[uuid.UUID],
+        query: str,
+        top_k: int = 5,
+        score_threshold: float | None = None,
+        context_budget: int | None = None,
+        queries: list[str] | None = None,
+        document_ids: list[uuid.UUID] | None = None,
+        exclude_ids: set[str] | None = None,
+    ) -> RetrievalResult:
+
+        threshold = (
+            score_threshold
+            if score_threshold is not None
+            else settings.DEFAULT_SCORE_THRESHOLD
+        )
+
+        all_queries = self._unique_queries([query, *(queries or [])])
+        pool = max(settings.RAG_CANDIDATE_POOL, top_k * 4)
+
+        # ---------------------------------------------
+        # 1. Search (dense + BM25 per query)
+        # ---------------------------------------------
+
         try:
-            use_hybrid = getattr(settings, "RAG_HYBRID_SEARCH", True)
-
-            if use_hybrid:
-                dense_task = self.vector_store.search(
-                    query=query,
-                    user_id=user_id,
-                    knowledge_base_ids=knowledge_base_ids,
-                    top_k=search_limit,
-                    score_threshold=score_threshold,
-                )
-                lexical_task = self.vector_store.search_keyword(
-                    query=query,
-                    user_id=user_id,
-                    knowledge_base_ids=knowledge_base_ids,
-                    top_k=search_limit,
-                )
-
-                results_pair = await asyncio.gather(
-                    dense_task,
-                    lexical_task,
-                    return_exceptions=True,
-                )
-
-                dense_res = (
-                    results_pair[0]
-                    if isinstance(results_pair[0], list)
-                    else []
-                )
-                lexical_res = (
-                    results_pair[1]
-                    if isinstance(results_pair[1], list)
-                    else []
-                )
-
-                if isinstance(results_pair[0], Exception):
-                    logger.warning(
-                        "Dense search error during hybrid retrieval: %s",
-                        results_pair[0],
+            results = await asyncio.gather(
+                *(
+                    self.vector_store.hybrid_search(
+                        query=q,
+                        user_id=user_id,
+                        knowledge_base_ids=knowledge_base_ids,
+                        limit=pool,
+                        document_ids=document_ids,
                     )
-                if isinstance(results_pair[1], Exception):
-                    logger.warning(
-                        "Lexical search error during hybrid retrieval: %s",
-                        results_pair[1],
-                    )
-
-                if dense_res and lexical_res:
-                    results = self._reciprocal_rank_fusion(
-                        dense_res,
-                        lexical_res,
-                    )
-                elif dense_res:
-                    results = dense_res
-                else:
-                    results = lexical_res
-            else:
-                results = await self.vector_store.search(
-                    query=query,
-                    user_id=user_id,
-                    knowledge_base_ids=knowledge_base_ids,
-                    top_k=search_limit,
-                    score_threshold=score_threshold,
-                )
-
+                    for q in all_queries
+                ),
+                return_exceptions=True,
+            )
         except Exception as exc:
-
-            if isinstance(
-                exc,
-                RetrievalException,
-            ):
-                raise
-
             raise RetrievalException(
                 "Knowledge retrieval failed."
             ) from exc
 
+        failures = [r for r in results if isinstance(r, Exception)]
+        if failures and len(failures) == len(results):
+            raise RetrievalException(
+                "Knowledge retrieval failed."
+            ) from failures[0]
+        for failure in failures:
+            logger.warning("Hybrid search error: %s", failure)
+
         # ---------------------------------------------
-        # Deduplicate & balance diversity
+        # 2. Fuse
         # ---------------------------------------------
 
-        chunks = self._deduplicate(
-            results,
-            limit=top_k,
-        )
+        candidates: dict[str, _Candidate] = {}
+        query_terms = [self.encoder.query_terms(q) for q in all_queries]
+
+        for result in results:
+            if isinstance(result, Exception):
+                continue
+            dense_hits, lexical_hits = result
+
+            for rank, match in enumerate(dense_hits):
+                cand = candidates.setdefault(match["id"], _Candidate(match))
+                cand.rrf += 1.0 / (self.RRF_K + rank + 1)
+                cand.dense = max(cand.dense or 0.0, float(match["score"]))
+
+            for rank, match in enumerate(lexical_hits):
+                cand = candidates.setdefault(match["id"], _Candidate(match))
+                cand.rrf += 1.0 / (self.RRF_K + rank + 1)
+
+        exclude_ids = exclude_ids or set()
 
         # ---------------------------------------------
-        # Small model optimization: Extract focused snippets
-        # if token budget is constrained
+        # 3. Relevance gate
         # ---------------------------------------------
-        if context_budget and context_budget <= 1200 and chunks:
-            max_chars_per_chunk = max(180, int((context_budget * 4) / max(1, len(chunks))))
+
+        kept: list[_Candidate] = []
+        for cand in candidates.values():
+            if cand.id in exclude_ids or not (cand.match.get("text") or "").strip():
+                continue
+
+            cand.terms = self.encoder.query_terms(
+                " ".join(
+                    filter(
+                        None,
+                        [
+                            cand.match.get("text"),
+                            cand.match.get("section"),
+                            cand.match.get("file_name"),
+                        ],
+                    )
+                )
+            )
+            cand.coverage = max(
+                (len(terms & cand.terms) / len(terms) for terms in query_terms if terms),
+                default=0.0,
+            )
+
+            semantic = cand.dense is not None and cand.dense >= threshold
+            lexical = cand.coverage >= settings.RAG_LEXICAL_MIN_COVERAGE
+            if semantic or lexical:
+                kept.append(cand)
+
+        kept.sort(key=lambda c: c.rrf, reverse=True)
+
+        # ---------------------------------------------
+        # 4. Rerank (optional) + diversity
+        # ---------------------------------------------
+
+        reranked = await self._rerank(query, kept[:30])
+        if reranked is not None:
+            kept = reranked
+
+        selected = self._diversify(kept, limit=top_k)
+
+        # ---------------------------------------------
+        # 5. Passages
+        # ---------------------------------------------
+
+        small_budget = bool(context_budget and context_budget <= 1200)
+
+        if settings.RAG_NEIGHBOR_WINDOW > 0 and not small_budget and selected:
+            chunks = await self._expand_neighbors(
+                selected,
+                user_id=user_id,
+                threshold=threshold,
+                char_budget=(context_budget * 4) if context_budget else None,
+            )
+        else:
+            chunks = [self._to_chunk(c, threshold) for c in selected]
+
+        if small_budget and chunks:
+            max_chars = max(180, int((context_budget * 4) / max(1, len(chunks))))
             for chunk in chunks:
                 chunk.text = self._extract_focused_snippet(
                     chunk.text,
                     query=query,
-                    max_chars=max_chars_per_chunk,
+                    max_chars=max_chars,
                 )
 
         return RetrievalResult(
             query=query,
             chunks=chunks,
-            knowledge_base_ids=(
-                knowledge_base_ids
-            ),
+            knowledge_base_ids=knowledge_base_ids,
             total_results=len(chunks),
+            diagnostics={
+                "queries": all_queries,
+                "candidates": len(candidates),
+                "passed_gate": len(kept),
+                "selected": len(selected),
+                "reranked": reranked is not None,
+            },
         )
+
+    # =====================================================
+    # HELPERS
+    # =====================================================
+
+    @staticmethod
+    def _unique_queries(queries: list[str]) -> list[str]:
+        seen: set[str] = set()
+        unique = []
+        for q in queries:
+            q = (q or "").strip()
+            key = " ".join(q.lower().split())
+            if q and key not in seen:
+                seen.add(key)
+                unique.append(q)
+        return unique[:4]
+
+    async def _rerank(
+        self,
+        query: str,
+        candidates: list[_Candidate],
+    ) -> list[_Candidate] | None:
+
+        model = _get_reranker()
+        if model is None or not candidates:
+            return None
+
+        pairs = [(query, c.match["text"][:2000]) for c in candidates]
+        try:
+            scores = await asyncio.to_thread(model.predict, pairs)
+        except Exception as exc:
+            logger.warning("Rerank failed, keeping fused order: %s", exc)
+            return None
+
+        for cand, score in zip(candidates, scores):
+            score = float(score)
+            if score < 0 or score > 1:
+                score = 1 / (1 + math.exp(-score))
+            cand.rerank = score
+
+        kept = [c for c in candidates if c.rerank >= settings.RAG_RERANK_THRESHOLD]
+        return sorted(kept, key=lambda c: c.rerank, reverse=True)
+
+    @staticmethod
+    def _diversify(
+        candidates: list[_Candidate],
+        *,
+        limit: int,
+    ) -> list[_Candidate]:
+        """
+        Drop near-duplicates (same passage from another ingest, repeated
+        boilerplate) and cap chunks per document, back-filling with the
+        best remaining candidates when slots are left.
+        """
+
+        max_per_doc = max(1, settings.RAG_MAX_PER_DOCUMENT)
+        selected: list[_Candidate] = []
+        overflow: list[_Candidate] = []
+        per_doc: dict[str, int] = defaultdict(int)
+
+        def is_duplicate(cand: _Candidate) -> bool:
+            for other in selected:
+                if not cand.terms or not other.terms:
+                    continue
+                overlap = len(cand.terms & other.terms) / len(cand.terms | other.terms)
+                if overlap >= 0.85:
+                    return True
+            return False
+
+        for cand in candidates:
+            if len(selected) >= limit:
+                break
+            if is_duplicate(cand):
+                continue
+            doc_id = str(cand.match.get("document_id"))
+            if per_doc[doc_id] >= max_per_doc:
+                overflow.append(cand)
+                continue
+            selected.append(cand)
+            per_doc[doc_id] += 1
+
+        for cand in overflow:
+            if len(selected) >= limit:
+                break
+            if not is_duplicate(cand):
+                selected.append(cand)
+
+        return selected
+
+    @staticmethod
+    def _relevance(cand: _Candidate, threshold: float) -> float:
+        if cand.rerank is not None:
+            return round(cand.rerank, 4)
+        if cand.dense is not None:
+            return round(cand.dense, 4)
+        # Lexical-only hit: just at the semantic threshold, scaled by coverage.
+        return round(threshold * (0.75 + 0.25 * cand.coverage), 4)
+
+    def _to_chunk(
+        self,
+        cand: _Candidate,
+        threshold: float,
+    ) -> RetrievedChunk:
+        match = cand.match
+        page = match.get("page")
+        page_end = match.get("page_end") or page
+        pages = (
+            list(range(page, page_end + 1))
+            if page is not None and page_end is not None and page_end >= page
+            else ([page] if page is not None else [])
+        )
+
+        return RetrievedChunk(
+            id=match["id"],
+            text=(match.get("text") or "").strip(),
+            score=self._relevance(cand, threshold),
+            document_id=uuid.UUID(str(match["document_id"])),
+            knowledge_base_id=uuid.UUID(str(match["knowledge_base_id"])),
+            chunk_index=match.get("chunk_index"),
+            page=page,
+            file_name=match.get("file_name"),
+            metadata={
+                **(match.get("metadata") or {}),
+                "section": match.get("section"),
+                "pages": pages,
+                "dense_score": cand.dense,
+                "lexical_coverage": round(cand.coverage, 3),
+            },
+        )
+
+    async def _expand_neighbors(
+        self,
+        selected: list[_Candidate],
+        *,
+        user_id: uuid.UUID,
+        threshold: float,
+        char_budget: int | None,
+    ) -> list[RetrievedChunk]:
+        """
+        Merge each hit with up to RAG_NEIGHBOR_WINDOW chunks on either side
+        (same document and ingest) so the LLM sees complete explanations
+        instead of fragments. Adjacent hits collapse into one passage.
+        """
+
+        window = settings.RAG_NEIGHBOR_WINDOW
+        positions: dict[str, list[int]] = defaultdict(list)
+
+        for cand in selected:
+            index = cand.match.get("chunk_index")
+            if index is None:
+                continue
+            doc_id = str(cand.match["document_id"])
+            positions[doc_id].extend(
+                i for i in range(index - window, index + window + 1) if i >= 0
+            )
+
+        try:
+            fetched = await self.vector_store.fetch_chunks(
+                user_id=user_id,
+                positions=positions,
+            )
+        except Exception as exc:
+            logger.warning("Neighbour expansion failed: %s", exc)
+            return [self._to_chunk(c, threshold) for c in selected]
+
+        by_position: dict[tuple[str, str | None, int], dict[str, Any]] = {
+            (str(m["document_id"]), m.get("ingest_id"), m["chunk_index"]): m
+            for m in fetched
+            if m.get("chunk_index") is not None
+        }
+
+        passages: list[RetrievedChunk] = []
+        covered: dict[tuple[str, str | None], set[int]] = defaultdict(set)
+        remaining = char_budget
+
+        for cand in selected:
+            hit = self._to_chunk(cand, threshold)
+            index = cand.match.get("chunk_index")
+            key = (str(cand.match["document_id"]), cand.match.get("ingest_id"))
+
+            if index is None:
+                passages.append(hit)
+                continue
+
+            if index in covered[key]:
+                # Already inside an earlier passage: lift its score.
+                for passage in passages:
+                    if (
+                        str(passage.document_id) == key[0]
+                        and index in passage.metadata.get("chunk_indexes", [])
+                    ):
+                        passage.score = max(passage.score, hit.score)
+                continue
+
+            # Grow outward from the hit while within the passage limit.
+            run = [index]
+            length = len(hit.text)
+            limit = self.MAX_PASSAGE_CHARS
+            if remaining is not None:
+                limit = min(limit, max(len(hit.text), remaining // max(1, len(selected))))
+
+            low = high = index
+            for _ in range(window):
+                for neighbor in (low - 1, high + 1):
+                    match = by_position.get((*key, neighbor))
+                    if match is None or neighbor in covered[key]:
+                        continue
+                    extra = len(match.get("text") or "")
+                    if length + extra > limit:
+                        continue
+                    run.append(neighbor)
+                    length += extra
+                    low, high = min(low, neighbor), max(high, neighbor)
+
+            run.sort()
+            parts = []
+            pages: set[int] = set(hit.metadata.get("pages") or [])
+
+            for position in run:
+                match = (
+                    cand.match
+                    if position == index
+                    else by_position[(*key, position)]
+                )
+                text = (match.get("text") or "").strip()
+                overlap = (match.get("metadata") or {}).get("overlap_chars", 0)
+                # Skip the carried overlap when the previous chunk is present.
+                if parts and overlap and (position - 1) in run:
+                    text = text[overlap:].strip()
+                parts.append(text)
+
+                page = match.get("page")
+                page_end = match.get("page_end") or page
+                if page is not None:
+                    pages.update(range(page, (page_end or page) + 1))
+
+            hit.text = "\n\n".join(p for p in parts if p)
+            hit.page = min(pages) if pages else hit.page
+            hit.metadata["pages"] = sorted(pages)
+            hit.metadata["chunk_indexes"] = run
+            passages.append(hit)
+            covered[key].update(run)
+
+            if remaining is not None:
+                remaining = max(0, remaining - len(hit.text))
+
+        return passages
 
     # =====================================================
     # FOCUSED SNIPPET EXTRACTION
@@ -365,185 +726,3 @@ class RetrievalService:
         if len(snippet) > max_chars:
             snippet = snippet[:max_chars].strip() + "..."
         return snippet
-
-    # =====================================================
-    # RECIPROCAL RANK FUSION (RRF)
-    # =====================================================
-
-    def _reciprocal_rank_fusion(
-        self,
-        dense_results: list[dict[str, Any]],
-        lexical_results: list[dict[str, Any]],
-        k: int = 60,
-    ) -> list[dict[str, Any]]:
-
-        scores: dict[str, float] = {}
-        doc_map: dict[str, dict[str, Any]] = {}
-
-        for rank, item in enumerate(dense_results):
-            item_id = str(item["id"])
-            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
-            if item_id not in doc_map:
-                doc_map[item_id] = dict(item)
-
-        for rank, item in enumerate(lexical_results):
-            item_id = str(item["id"])
-            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
-            if item_id not in doc_map:
-                doc_map[item_id] = dict(item)
-
-        # Sort items by fused RRF score
-        sorted_ids = sorted(
-            scores.keys(),
-            key=lambda i: scores[i],
-            reverse=True,
-        )
-        fused_results: list[dict[str, Any]] = []
-
-        # Normalization baseline: top ranking in both modalities
-        max_possible_rrf = 2.0 / (k + 1)
-
-        for item_id in sorted_ids:
-            item = doc_map[item_id]
-            original_score = item.get("score", 0.0)
-            fused_score = round(
-                min(1.0, scores[item_id] / max_possible_rrf),
-                4,
-            )
-            item["rrf_score"] = scores[item_id]
-            # Blend semantic confidence with lexical boost
-            item["score"] = max(original_score, fused_score)
-            fused_results.append(item)
-
-        return fused_results
-
-    # =====================================================
-    # DEDUPLICATION
-    # =====================================================
-
-    def _deduplicate(
-        self,
-        results: list[dict[str, Any]],
-        *,
-        limit: int,
-    ) -> list[RetrievedChunk]:
-
-        candidates: list[RetrievedChunk] = []
-        seen_ids: set[str] = set()
-        seen_text: set[str] = set()
-
-        for result in results:
-
-            point_id = str(
-                result["id"]
-            )
-
-            if point_id in seen_ids:
-                continue
-
-            text = (
-                result.get("text")
-                or ""
-            ).strip()
-
-            if not text:
-                continue
-
-            normalized_text = (
-                " ".join(
-                    text.lower().split()
-                )
-            )
-
-            if normalized_text in seen_text:
-                continue
-
-            try:
-
-                document_id = uuid.UUID(
-                    str(
-                        result["document_id"]
-                    )
-                )
-
-                knowledge_base_id = uuid.UUID(
-                    str(
-                        result[
-                            "knowledge_base_id"
-                        ]
-                    )
-                )
-
-            except (
-                ValueError,
-                TypeError,
-                KeyError,
-            ):
-                continue
-
-            metadata = (
-                result.get("metadata")
-                or {}
-            )
-
-            file_name = (
-                result.get("file_name")
-                or metadata.get("file_name")
-            )
-
-            candidates.append(
-                RetrievedChunk(
-                    id=point_id,
-                    text=text,
-                    score=float(
-                        result.get(
-                            "score",
-                            0,
-                        )
-                    ),
-                    document_id=document_id,
-                    knowledge_base_id=(
-                        knowledge_base_id
-                    ),
-                    chunk_index=result.get(
-                        "chunk_index"
-                    ),
-                    page=result.get(
-                        "page"
-                    ),
-                    file_name=file_name,
-                    metadata=metadata,
-                )
-            )
-
-            seen_ids.add(point_id)
-            seen_text.add(
-                normalized_text
-            )
-
-        # Count distinct documents present
-        doc_ids = {c.document_id for c in candidates}
-
-        # If multiple distinct documents matched, preserve primary relevance
-        # while preventing any single document from starving all other references
-        if len(doc_ids) > 1:
-            max_per_doc = max(2, min(3, max(1, limit - 1)))
-            selected: list[RetrievedChunk] = []
-            doc_counts: dict[uuid.UUID, int] = {}
-            remaining: list[RetrievedChunk] = []
-
-            for chunk in candidates:
-                count = doc_counts.get(chunk.document_id, 0)
-                if count < max_per_doc and len(selected) < limit:
-                    selected.append(chunk)
-                    doc_counts[chunk.document_id] = count + 1
-                else:
-                    remaining.append(chunk)
-
-            # Fill any remaining slots up to limit with the next best scoring chunks
-            while len(selected) < limit and remaining:
-                selected.append(remaining.pop(0))
-
-            return selected
-
-        return candidates[:limit]

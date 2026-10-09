@@ -3,7 +3,13 @@ import logging
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
+    KeywordIndexParams,
+    Modifier,
     PayloadSchemaType,
+    ScalarQuantization,
+    ScalarQuantizationConfig,
+    ScalarType,
+    SparseVectorParams,
     TextIndexParams,
     TokenizerType,
     VectorParams,
@@ -128,6 +134,88 @@ async def ensure_collection(
             collection_name,
             exc,
         )
+
+
+# ---------------------------------------------------------
+# Ensure Hybrid Collection (dense + BM25 sparse)
+# ---------------------------------------------------------
+
+DENSE_VECTOR = "dense"
+SPARSE_VECTOR = "bm25"
+
+
+async def ensure_hybrid_collection(
+    *,
+    collection_name: str,
+    vector_size: int,
+) -> None:
+    """
+    Collection for hybrid retrieval at scale:
+    - named dense vector (cosine), optionally int8-quantized with the
+      originals kept for rescoring;
+    - BM25 sparse vector; Qdrant applies IDF at query time;
+    - `user_id` indexed as the tenant key so filtered HNSW search stays
+      fast with many users/documents.
+    """
+
+    if not await collection_exists(collection_name):
+        logger.info(
+            "Creating hybrid Qdrant collection: %s",
+            collection_name,
+        )
+
+        quantization = None
+        if settings.QDRANT_QUANTIZATION:
+            quantization = ScalarQuantization(
+                scalar=ScalarQuantizationConfig(
+                    type=ScalarType.INT8,
+                    quantile=0.99,
+                    always_ram=True,
+                ),
+            )
+
+        await qdrant_client.create_collection(
+            collection_name=collection_name,
+            vectors_config={
+                DENSE_VECTOR: VectorParams(
+                    size=vector_size,
+                    distance=Distance.COSINE,
+                    on_disk=settings.QDRANT_ON_DISK_VECTORS,
+                ),
+            },
+            sparse_vectors_config={
+                SPARSE_VECTOR: SparseVectorParams(
+                    modifier=Modifier.IDF,
+                ),
+            },
+            quantization_config=quantization,
+            on_disk_payload=True,
+        )
+
+    indexes = [
+        ("user_id", KeywordIndexParams(type="keyword", is_tenant=True)),
+        ("knowledge_base_id", PayloadSchemaType.KEYWORD),
+        ("document_id", PayloadSchemaType.KEYWORD),
+        ("ingest_id", PayloadSchemaType.KEYWORD),
+        ("file_name", PayloadSchemaType.KEYWORD),
+        ("chunk_index", PayloadSchemaType.INTEGER),
+        ("page", PayloadSchemaType.INTEGER),
+    ]
+
+    for field_name, schema in indexes:
+        try:
+            await qdrant_client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field_name,
+                field_schema=schema,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Payload index %s on %s not created: %s",
+                field_name,
+                collection_name,
+                exc,
+            )
 
 
 # ---------------------------------------------------------

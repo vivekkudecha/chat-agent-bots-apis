@@ -37,6 +37,34 @@ class EmbeddingProvider(ABC):
 
 
 # =========================================================
+# Query Instructions
+# =========================================================
+
+# Asymmetric retrieval models expect queries (not documents) to carry an
+# instruction; without it recall drops noticeably.
+_QUERY_INSTRUCTIONS = (
+    ("qwen3-embedding", "Instruct: Given a question, retrieve passages from documents that answer the question\nQuery: "),
+    ("e5", "query: "),
+    ("nomic-embed", "search_query: "),
+    ("bge-", "Represent this sentence for searching relevant passages: "),
+)
+
+
+def query_instruction(model_name: str) -> str:
+    configured = settings.EMBEDDING_QUERY_INSTRUCTION
+    if configured is not None:
+        return configured.replace("\\n", "\n")
+
+    name = (model_name or "").lower()
+    if "bge-m3" in name:
+        return ""
+    for marker, instruction in _QUERY_INSTRUCTIONS:
+        if marker in name:
+            return instruction
+    return ""
+
+
+# =========================================================
 # Ollama Embedding Provider
 # =========================================================
 
@@ -75,7 +103,7 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         if not texts:
             return []
 
-        batch_size = 32
+        batch_size = max(1, settings.EMBEDDING_BATCH_SIZE)
         concurrency = max(1, getattr(settings, "EMBEDDING_CONCURRENCY", 4))
         semaphore = asyncio.Semaphore(concurrency)
 
@@ -147,6 +175,8 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
     ) -> list[float]:
         if not text:
             return [0.0] * self.dimension
+
+        text = query_instruction(self.model_name) + text
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
@@ -258,7 +288,7 @@ class SentenceTransformerEmbeddingProvider(EmbeddingProvider):
     ) -> list[float]:
         embeddings = await asyncio.to_thread(
             self.model.encode,
-            [text],
+            [query_instruction(self.model_name) + text],
             normalize_embeddings=True,
             show_progress_bar=False,
         )

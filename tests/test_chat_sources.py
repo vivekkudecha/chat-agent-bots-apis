@@ -54,6 +54,7 @@ class ChatSourcesTests(unittest.IsolatedAsyncioTestCase):
         graph._context_builder_node = AsyncMock(return_value={})
         graph._supervisor_node = AsyncMock(return_value={"route": route})
         graph._retrieve_node = AsyncMock(return_value={"retrieval": retrieval})
+        graph._grade_evidence_node = AsyncMock(return_value={})
         graph.app = graph._build_graph()
         db = SimpleNamespace(commit=AsyncMock())
         saved_messages = []

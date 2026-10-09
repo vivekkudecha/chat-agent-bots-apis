@@ -1,6 +1,8 @@
 from app.integrations.storage import get_storage_provider
+import asyncio
 from dataclasses import dataclass
 import hashlib
+import logging
 import uuid
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -18,11 +20,14 @@ from app.repositories.knowledge_repository import (
     KnowledgeRepository,
 )
 
+from app.config import settings
+
 from app.ai.rag import (
     ChunkingService,
     TextExtractionService,
     VectorStoreService,
 )
+from app.ai.rag.text_extraction import ExtractionStats
 
 from app.core.exceptions import (
     DuplicateDocumentException,
@@ -30,6 +35,9 @@ from app.core.exceptions import (
     DocumentNotFoundException,
     ValidationException,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -336,6 +344,8 @@ class DocumentService:
         if not knowledge_base:
             raise KnowledgeBaseNotFoundException()
 
+        ingest_id = uuid.uuid4().hex
+
         try:
 
             # ---------------------------------------------
@@ -349,32 +359,11 @@ class DocumentService:
 
             await db.commit()
 
-            # ---------------------------------------------
-            # Extract
-            # ---------------------------------------------
-
             local_path = (
                 await self.storage.get_local_path(
                     document.storage_key
                 )
             )
-
-            extraction = (
-                await self.extractor.extract(
-                    local_path
-                )
-            )
-
-            if not extraction.sections:
-
-                raise ValidationException(
-                    "No extractable text was "
-                    "found in the document."
-                )
-
-            # ---------------------------------------------
-            # Chunking configuration
-            # ---------------------------------------------
 
             chunk_config = (
                 knowledge_base.chunking_config
@@ -384,75 +373,48 @@ class DocumentService:
             chunker = ChunkingService(
                 chunk_size=chunk_config.get(
                     "chunk_size",
-                    800,
+                    settings.DEFAULT_CHUNK_SIZE,
                 ),
                 chunk_overlap=chunk_config.get(
                     "chunk_overlap",
-                    100,
+                    settings.DEFAULT_CHUNK_OVERLAP,
                 ),
                 separators=chunk_config.get(
                     "separators"
                 ),
             )
 
-            chunks = (
-                chunker.chunk_extraction(
-                    extraction
-                )
-            )
-
-            if not chunks:
-                raise ValidationException(
-                    "Document produced no chunks."
-                )
-
             # ---------------------------------------------
-            # Convert to vector-store format
-            # ---------------------------------------------
-
-            vector_chunks = []
-
-            for chunk in chunks:
-
-                vector_chunks.append(
-                    {
-                        "index": chunk.index,
-                        "text": chunk.text,
-                        "page": chunk.page,
-                        "metadata": {
-                            **chunk.metadata,
-                            "file_name": (
-                                document.original_name
-                            ),
-                        },
-                    }
-                )
-
-            # ---------------------------------------------
-            # Remove previous vectors
+            # Stream: extract -> chunk -> embed -> upsert
             #
-            # Important for reprocessing.
+            # Page batches flow through a bounded queue so
+            # extraction of batch N+1 overlaps embedding of
+            # batch N and memory stays flat for any page
+            # count. Points are written under a new ingest
+            # id; the previous version stays searchable
+            # until this one completes.
             # ---------------------------------------------
 
-            await self.vector_store.delete_document(
-                document.id
+            stats = ExtractionStats()
+
+            chunk_count = await self._ingest(
+                db,
+                document=document,
+                local_path=local_path,
+                chunker=chunker,
+                stats=stats,
+                ingest_id=ingest_id,
             )
 
-            # ---------------------------------------------
-            # Embed + Qdrant
-            # ---------------------------------------------
-
-            chunk_count = (
-                await self.vector_store
-                .upsert_chunks(
-                    user_id=document.user_id,
-                    knowledge_base_id=(
-                        document
-                        .knowledge_base_id
-                    ),
-                    document_id=document.id,
-                    chunks=vector_chunks,
+            if not chunk_count:
+                raise ValidationException(
+                    "No extractable text was "
+                    "found in the document."
                 )
+
+            await self.vector_store.delete_stale_ingests(
+                document.id,
+                keep_ingest_id=ingest_id,
             )
 
             # ---------------------------------------------
@@ -465,10 +427,10 @@ class DocumentService:
                     db,
                     document,
                     {
-                        **extraction.metadata,
-                        "chunk_count": (
-                            chunk_count
-                        ),
+                        **stats.as_metadata(),
+                        "chunk_count": chunk_count,
+                        "ingest_id": ingest_id,
+                        "index_version": settings.RAG_INDEX_VERSION,
                     },
                 )
             )
@@ -493,6 +455,20 @@ class DocumentService:
 
             await db.rollback()
 
+            # Drop the partial ingest; the previous version
+            # (if any) remains intact.
+            try:
+                await self.vector_store.delete_ingest(
+                    document_id,
+                    ingest_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to clean partial ingest %s of %s",
+                    ingest_id,
+                    document_id,
+                )
+
             # Retrieve again because rollback can expire
             # or reset ORM state depending on session config.
 
@@ -514,6 +490,97 @@ class DocumentService:
                 await db.commit()
 
             raise
+
+    async def _ingest(
+        self,
+        db: AsyncSession,
+        *,
+        document: Document,
+        local_path: Any,
+        chunker: ChunkingService,
+        stats: ExtractionStats,
+        ingest_id: str,
+    ) -> int:
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+        file_name = document.original_name
+
+        async def produce() -> None:
+            try:
+                async for sections in self.extractor.iter_batches(
+                    local_path,
+                    stats=stats,
+                ):
+                    chunks = chunker.feed(sections)
+                    if chunks:
+                        await queue.put(chunks)
+
+                tail = chunker.flush()
+                if tail:
+                    await queue.put(tail)
+            finally:
+                await queue.put(None)
+
+        producer = asyncio.create_task(produce())
+        chunk_count = 0
+
+        try:
+            while (chunks := await queue.get()) is not None:
+
+                chunk_count += await self.vector_store.upsert_chunks(
+                    user_id=document.user_id,
+                    knowledge_base_id=document.knowledge_base_id,
+                    document_id=document.id,
+                    ingest_id=ingest_id,
+                    chunks=[
+                        {
+                            "index": chunk.index,
+                            "text": chunk.text,
+                            "page": chunk.page,
+                            "metadata": {
+                                **chunk.metadata,
+                                "file_name": file_name,
+                            },
+                        }
+                        for chunk in chunks
+                    ],
+                )
+
+                # Progress for UIs polling the document.
+                await DocumentRepository.update_extraction_metadata(
+                    db,
+                    document,
+                    {
+                        **(document.extraction_metadata or {}),
+                        "progress": {
+                            "pages_total": stats.page_count,
+                            "pages_processed": stats.pages_with_text,
+                            "chunks_indexed": chunk_count,
+                        },
+                    },
+                )
+                await db.commit()
+
+            # Surface extraction errors.
+            await producer
+
+        finally:
+            if not producer.done():
+                producer.cancel()
+                try:
+                    await producer
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        logger.info(
+            "Indexed document %s: %s chunks from %s pages (ocr=%s)",
+            document.id,
+            chunk_count,
+            stats.page_count,
+            stats.ocr_pages,
+        )
+
+        return chunk_count
 
     # =====================================================
     # DELETE DOCUMENT

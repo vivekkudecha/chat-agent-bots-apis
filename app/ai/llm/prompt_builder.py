@@ -576,8 +576,15 @@ Follow the platform rules before any bot-specific instructions:
             if chunk.file_name:
                 source_parts.append(f"File: {chunk.file_name}")
 
-            if chunk.page is not None:
+            pages = (chunk.metadata or {}).get("pages") or []
+            if len(pages) > 1:
+                source_parts.append(f"Pages: {pages[0]}-{pages[-1]}")
+            elif chunk.page is not None:
                 source_parts.append(f"Page: {chunk.page}")
+
+            section = (chunk.metadata or {}).get("section")
+            if section:
+                source_parts.append(f"Section: {section}")
 
             source_parts.append(f"Document ID: {chunk.document_id}")
 

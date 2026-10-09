@@ -6,6 +6,8 @@ from celery.exceptions import (
     SoftTimeLimitExceeded,
 )
 
+from app.config import settings
+
 from app.workers.celery_app import (
     celery_app,
 )
@@ -42,6 +44,9 @@ def run_async(coro):
 @celery_app.task(
     bind=True,
     name="documents.process",
+    # Large scanned documents can take far longer than the global limit.
+    soft_time_limit=settings.DOCUMENT_TASK_SOFT_TIME_LIMIT,
+    time_limit=settings.DOCUMENT_TASK_TIME_LIMIT,
     autoretry_for=(
         ConnectionError,
         TimeoutError,

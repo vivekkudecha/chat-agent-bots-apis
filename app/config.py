@@ -136,6 +136,65 @@ class Settings(BaseSettings):
 
     RAG_HYBRID_SEARCH: bool = True
 
+    # Hybrid (dense + BM25 sparse) index. Bumping the version moves new
+    # writes and reads to "<QDRANT_COLLECTION>_v<N>"; reindex afterwards
+    # with `python -m scripts.reindex_documents`.
+    RAG_INDEX_VERSION: int = 2
+
+    # int8 scalar quantization keeps ~4x more vectors in RAM (rescored
+    # with full vectors), needed for 100k+ chunk collections.
+    QDRANT_QUANTIZATION: bool = True
+
+    QDRANT_ON_DISK_VECTORS: bool = False
+
+    # Average chunk length (tokens) used for BM25 length normalisation.
+    RAG_BM25_AVG_DOC_TOKENS: int = 160
+
+    # Ingestion
+    EMBEDDING_BATCH_SIZE: int = 32
+
+    # Prefix applied to search queries (not documents). Empty string
+    # disables it; unset picks a default for instruction-tuned models.
+    EMBEDDING_QUERY_INSTRUCTION: str | None = None
+
+    RAG_INGEST_PAGE_BATCH: int = 20
+
+    RAG_UPSERT_BATCH_SIZE: int = 128
+
+    DOCUMENT_TASK_SOFT_TIME_LIMIT: int = 3 * 3600
+
+    DOCUMENT_TASK_TIME_LIMIT: int = 3 * 3600 + 300
+
+    # Retrieval
+    RAG_CANDIDATE_POOL: int = 40
+
+    RAG_NEIGHBOR_WINDOW: int = 1
+
+    RAG_MAX_PER_DOCUMENT: int = 3
+
+    # Keep a below-threshold dense hit when this share of query terms
+    # appears verbatim (codes, IDs, names).
+    RAG_LEXICAL_MIN_COVERAGE: float = 0.6
+
+    # Optional cross-encoder, e.g. "BAAI/bge-reranker-v2-m3".
+    RAG_RERANKER_MODEL: str | None = None
+
+    RAG_RERANK_THRESHOLD: float = 0.2
+
+    # Agentic retrieval (grade evidence, refine query, retrieve again)
+    RAG_AGENTIC: bool = True
+
+    RAG_MAX_ROUNDS: int = 2
+
+    RAG_GRADER_MODEL: str | None = None
+
+    RAG_GRADER_PASSAGE_CHARS: int = 600
+
+    # Sent with internal structured LLM calls (grading). "none" turns off
+    # thinking on Ollama reasoning models such as gemma4/qwen3, which
+    # otherwise spend the whole token budget reasoning. Empty disables.
+    LLM_INTERNAL_REASONING_EFFORT: str | None = "none"
+
     # ---------------------------------------------------------
     # Guardrails
     # ---------------------------------------------------------

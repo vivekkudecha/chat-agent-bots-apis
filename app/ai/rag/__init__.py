@@ -15,6 +15,13 @@ from app.ai.rag.retrieval import (
     RetrievalService,
     RetrievedChunk,
 )
+from app.ai.rag.sparse import (
+    BM25SparseEncoder,
+)
+from app.ai.rag.agentic import (
+    EvidenceGrade,
+    EvidenceGrader,
+)
 
 __all__ = [
     "TextExtractionService",
@@ -26,4 +33,7 @@ __all__ = [
     "RetrievalResult",
     "RetrievedChunk",
     "DistinctSource",
+    "BM25SparseEncoder",
+    "EvidenceGrader",
+    "EvidenceGrade",
 ]

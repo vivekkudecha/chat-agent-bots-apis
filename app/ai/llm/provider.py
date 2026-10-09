@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 from app.config import settings
 from app.core.exceptions import ModelExecutionException
@@ -52,6 +52,8 @@ class LLMProvider(ABC):
         top_p: float = 1.0,
         max_tokens: int = 2048,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
         pass
 
@@ -293,6 +295,8 @@ class OpenAICompatibleProvider(LLMProvider):
         top_p: float = 1.0,
         max_tokens: int = 2048,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
         try:
 
@@ -310,7 +314,20 @@ class OpenAICompatibleProvider(LLMProvider):
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
 
-            response = await self.client.chat.completions.create(**kwargs)
+            optional: dict[str, Any] = {}
+            if response_format:
+                optional["response_format"] = response_format
+            if reasoning_effort:
+                optional["reasoning_effort"] = reasoning_effort
+
+            try:
+                response = await self.client.chat.completions.create(**kwargs, **optional)
+            except BadRequestError:
+                # Not every backend accepts these hints; they are optional.
+                if not optional:
+                    raise
+                logger.info("Retrying LLM call without %s", ", ".join(optional))
+                response = await self.client.chat.completions.create(**kwargs)
 
             if not response.choices:
                 raise ModelExecutionException("Model returned no choices.")
