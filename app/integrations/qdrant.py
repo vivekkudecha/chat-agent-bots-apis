@@ -158,7 +158,20 @@ async def ensure_hybrid_collection(
       fast with many users/documents.
     """
 
-    if not await collection_exists(collection_name):
+    if await collection_exists(collection_name):
+        info = await qdrant_client.get_collection(collection_name)
+        vectors = info.config.params.vectors
+        existing = vectors.get(DENSE_VECTOR) if isinstance(vectors, dict) else None
+        if existing is not None and existing.size != vector_size:
+            logger.error(
+                "Collection %s stores %d-dim vectors but the embedding model "
+                "returns %d. Searches and writes will fail: bump "
+                "RAG_INDEX_VERSION and run scripts.reindex_documents.",
+                collection_name,
+                existing.size,
+                vector_size,
+            )
+    else:
         logger.info(
             "Creating hybrid Qdrant collection: %s",
             collection_name,

@@ -7,7 +7,9 @@ from app.ai.llm.provider import (
 )
 from app.ai.llm.embeddings import (
     EmbeddingProvider,
+    HTTPEmbeddingProvider,
     OllamaEmbeddingProvider,
+    OpenAICompatibleEmbeddingProvider,
     SentenceTransformerEmbeddingProvider,
     get_embedding_provider,
 )
@@ -24,7 +26,9 @@ __all__ = [
     "LLMUsage",
     "get_llm_provider",
     "EmbeddingProvider",
+    "HTTPEmbeddingProvider",
     "OllamaEmbeddingProvider",
+    "OpenAICompatibleEmbeddingProvider",
     "SentenceTransformerEmbeddingProvider",
     "get_embedding_provider",
     "PromptBuilderService",

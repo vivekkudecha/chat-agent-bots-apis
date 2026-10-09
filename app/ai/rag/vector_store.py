@@ -95,6 +95,17 @@ class VectorStoreService:
 
     async def initialize(self) -> None:
 
+        # Learn the real vector size before creating the collection. An
+        # unreachable embedding server must not block API startup.
+        try:
+            await self.embedding_provider.probe()
+        except Exception as exc:
+            logger.warning(
+                "Embedding probe failed (%s); using EMBEDDING_DIMENSION=%d",
+                exc,
+                self.embedding_provider.dimension,
+            )
+
         await ensure_hybrid_collection(
             collection_name=self.collection_name,
             vector_size=(

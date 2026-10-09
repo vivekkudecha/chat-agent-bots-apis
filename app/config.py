@@ -40,11 +40,37 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------
     # Embedding
     # ---------------------------------------------------------
+    # "ollama" (native /api/embed), "openai" (any OpenAI-compatible
+    # /v1/embeddings: vLLM, TEI, LiteLLM, OpenAI, Ollama /v1) or
+    # "local" (in-process sentence-transformers).
     EMBEDDING_PROVIDER: str = "local"
 
     EMBEDDING_MODEL: str = "BAAI/bge-base-en-v1.5"
 
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+
+    # Embedding endpoint; falls back to OLLAMA_BASE_URL. Either the server
+    # root or a URL ending in /api or /v1 is accepted.
+    EMBEDDING_BASE_URL: str | None = None
+
+    # Sent as "Authorization: Bearer <key>" (remote/proxied Ollama, gateways).
+    EMBEDDING_API_KEY: str | None = None
+
+    # Unset = same as the LLM settings (LLM_VERIFY_SSL / LLM_TRUST_ENV).
+    EMBEDDING_VERIFY_SSL: bool | None = None
+
+    EMBEDDING_TRUST_ENV: bool | None = None
+
+    EMBEDDING_TIMEOUT_SECONDS: float = 60.0
+
+    # Retries for connection errors, timeouts, 429 and 5xx (exp. backoff).
+    EMBEDDING_MAX_RETRIES: int = 3
+
+    # Extra request headers as JSON, e.g. '{"X-Tenant": "acme"}'.
+    EMBEDDING_HEADERS: dict[str, str] = Field(default_factory=dict)
+
+    # Ollama only: how long the model stays loaded, e.g. "30m" or "-1".
+    EMBEDDING_KEEP_ALIVE: str | None = None
 
     EMBEDDING_CONCURRENCY: int = 4
 
