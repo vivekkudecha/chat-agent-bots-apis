@@ -627,7 +627,7 @@ When route is TOOL:
         sections.append(
             "BOT SCOPE / INSTRUCTIONS:\n"
             + (
-                bot_instruction[:1500]
+                bot_instruction[:4000]
                 if bot_instruction
                 else "General enterprise assistant"
             )

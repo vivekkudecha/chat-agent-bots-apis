@@ -70,6 +70,7 @@ class FollowUpSuggester:
         document_titles: list[str] | None = None,
         found_nothing: bool = False,
         topic: bool = False,
+        bot_instruction: str = "",
     ) -> Clarification:
 
         if not topics and document_titles:
@@ -94,7 +95,8 @@ class FollowUpSuggester:
             situation = "The message is too short or unclear to know exactly what the user wants."
 
         prompt = (
-            f'USER MESSAGE: "{question}"\n'
+            self._bot_rules(bot_instruction)
+            + f'USER MESSAGE: "{question}"\n'
             f"SITUATION: {situation}\n\n"
             "KNOWLEDGE BASE TOPICS:\n"
             + self._format_topics(topics)
@@ -106,7 +108,9 @@ class FollowUpSuggester:
             "- Prefer topics related to the user message; if none relate, say briefly what the "
             "knowledge base covers and suggest questions about those topics.\n"
             "- Write each suggestion as a complete question the user would type, under 15 words.\n"
-            "- Use the language of the user message."
+            "- Use the language of the user message unless the BOT INSTRUCTIONS require another.\n"
+            "- Follow the BOT INSTRUCTIONS (tone, scope, language); only suggest questions "
+            "within the scope they allow."
         )
 
         data, usage = await self._ask(prompt, model)
@@ -136,13 +140,15 @@ class FollowUpSuggester:
         answer: str,
         topics: list[dict[str, Any]],
         model: str,
+        bot_instruction: str = "",
     ) -> tuple[list[str], LLMUsage]:
 
         if not topics:
             return [], LLMUsage()
 
         prompt = (
-            f'QUESTION: "{question}"\n\n'
+            self._bot_rules(bot_instruction)
+            + f'QUESTION: "{question}"\n\n'
             f"ANSWER GIVEN (partial):\n{answer[:1200]}\n\n"
             "KNOWLEDGE BASE TOPICS:\n"
             + self._format_topics(topics)
@@ -151,7 +157,9 @@ class FollowUpSuggester:
             "Rules:\n"
             "- Each follow-up must be answerable from the topics listed above.\n"
             "- Do not repeat what the answer already covers.\n"
-            "- Complete questions under 15 words, in the language of the question."
+            "- Complete questions under 15 words, in the language of the question unless the "
+            "BOT INSTRUCTIONS require another.\n"
+            "- Stay within the scope and tone of the BOT INSTRUCTIONS."
         )
 
         data, usage = await self._ask(prompt, model)
@@ -167,6 +175,17 @@ class FollowUpSuggester:
     # -----------------------------------------------------
     # Helpers
     # -----------------------------------------------------
+
+    @staticmethod
+    def _bot_rules(bot_instruction: str) -> str:
+        """Owner's bot instructions govern user-visible wording and scope."""
+        text = (bot_instruction or "").strip()
+        if not text:
+            return ""
+        return (
+            "BOT INSTRUCTIONS (mandatory, written by the bot owner):\n"
+            f"<bot_instructions>\n{text[:2000]}\n</bot_instructions>\n\n"
+        )
 
     async def _ask(self, prompt: str, model: str) -> tuple[dict[str, Any] | None, LLMUsage]:
         try:
