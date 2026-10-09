@@ -25,7 +25,7 @@ def chunk(text, *, document_id=None, page=1):
 
 class ChatSourcesTests(unittest.IsolatedAsyncioTestCase):
     async def run_chat(self, answer, chunks=(), web_results=(), *, max_context=8192,
-                       guarded_answer=None, responses=None):
+                       guarded_answer=None, responses=None, route=None, grade=None):
         """Exercise real prompt building, LangGraph generation, and ChatService.
 
         Replace only external retrieval, inference, guardrails and persistence.
@@ -35,7 +35,7 @@ class ChatSourcesTests(unittest.IsolatedAsyncioTestCase):
         model = SimpleNamespace(id=uuid.uuid4(), model_key="test", provider="test",
                                 is_active=True, context_window=max_context)
         retrieval = RetrievalResult("leave policy", list(chunks), [uuid.UUID(int=1)])
-        route = "rag" if chunks else ("tool" if web_results else "direct")
+        route = route or ("rag" if chunks else ("tool" if web_results else "direct"))
         llm = SimpleNamespace(chat=AsyncMock(side_effect=responses or [
             LLMResponse(content=answer, model="test")
         ]))
@@ -54,7 +54,7 @@ class ChatSourcesTests(unittest.IsolatedAsyncioTestCase):
         graph._context_builder_node = AsyncMock(return_value={})
         graph._supervisor_node = AsyncMock(return_value={"route": route})
         graph._retrieve_node = AsyncMock(return_value={"retrieval": retrieval})
-        graph._grade_evidence_node = AsyncMock(return_value={})
+        graph._grade_evidence_node = AsyncMock(return_value=grade or {})
         graph.app = graph._build_graph()
         db = SimpleNamespace(commit=AsyncMock())
         saved_messages = []
@@ -130,6 +130,31 @@ class ChatSourcesTests(unittest.IsolatedAsyncioTestCase):
     async def test_guardrail_replacement_cannot_retain_original_citations(self):
         result, _ = await self.run_chat("20 days. [KB1]", [chunk("20 days of leave.")], guarded_answer="Response removed.")
         self.assertEqual(result.sources, [])
+
+    async def test_clarification_returns_suggestions_and_persists_them(self):
+        clarify_json = '{"question": "Which part of LSA?", "suggestions": ["How many LSA leave days do I get?"]}'
+        text = "Which part of LSA?\n\n- How many LSA leave days do I get?"
+        result, saved = await self.run_chat(
+            text, route="rag", grade={"rag_ambiguous": True, "rag_topics": [
+                {"file_name": "lsa.pdf", "section": "LSA Policy > 5. LSA Leave Guidelines", "preview": "3 days"}]},
+            responses=[LLMResponse(content=clarify_json, model="test")],
+        )
+        self.assertEqual(result.content, text)
+        self.assertTrue(result.needs_clarification)
+        self.assertEqual(result.suggestions, ["How many LSA leave days do I get?"])
+        self.assertEqual(result.sources, [])
+        self.assertEqual(saved["metadata"]["suggestions"], ["How many LSA leave days do I get?"])
+        self.assertTrue(saved["metadata"]["needs_clarification"])
+
+    async def test_guardrail_replacement_drops_suggestions(self):
+        clarify_json = '{"question": "Which part?", "suggestions": ["How many LSA leave days do I get?"]}'
+        result, saved = await self.run_chat(
+            "Which part?\n\n- How many LSA leave days do I get?", route="rag",
+            grade={"rag_ambiguous": True, "rag_topics": [{"file_name": "lsa.pdf", "section": "Leave"}]},
+            responses=[LLMResponse(content=clarify_json, model="test")], guarded_answer="Response removed.",
+        )
+        self.assertEqual(result.suggestions, [])
+        self.assertEqual(saved["metadata"]["suggestions"], [])
 
     async def test_direct_answer_has_no_sources(self):
         result, _ = await self.run_chat("Hello!")

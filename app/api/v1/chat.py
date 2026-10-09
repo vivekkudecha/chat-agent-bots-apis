@@ -121,4 +121,8 @@ async def chat(
         tool_calls=result.tool_calls,
 
         warnings=result.warnings,
+
+        suggestions=result.suggestions,
+
+        needs_clarification=result.needs_clarification,
     )

@@ -514,6 +514,38 @@ class VectorStoreService:
         return [self._to_match(p) for p in points]
 
     # =====================================================
+    # DOCUMENT CATALOG
+    # =====================================================
+
+    async def list_document_titles(
+        self,
+        *,
+        user_id: uuid.UUID,
+        knowledge_base_ids: list[uuid.UUID],
+        limit: int = 8,
+    ) -> list[str]:
+        """Most-chunked document names in scope (facet on file_name)."""
+
+        if not knowledge_base_ids:
+            return []
+
+        try:
+            response = await self.client.facet(
+                collection_name=self.collection_name,
+                key="file_name",
+                facet_filter=self._scope_filter(
+                    user_id=user_id,
+                    knowledge_base_ids=knowledge_base_ids,
+                ),
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.warning("Document catalog lookup failed: %s", exc)
+            return []
+
+        return [str(hit.value) for hit in response.hits if hit.value]
+
+    # =====================================================
     # DELETE
     # =====================================================
 

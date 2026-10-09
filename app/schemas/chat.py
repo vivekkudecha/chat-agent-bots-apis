@@ -295,3 +295,16 @@ class ChatResponse(BaseModel):
     warnings: list[str] = Field(
         default_factory=list
     )
+
+    suggestions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Follow-up questions the knowledge base can answer; render as "
+            "clickable options that send the text as the next message"
+        ),
+    )
+
+    needs_clarification: bool = Field(
+        default=False,
+        description="True when the reply is a clarifying question instead of an answer",
+    )

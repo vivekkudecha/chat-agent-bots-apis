@@ -216,6 +216,22 @@ class Settings(BaseSettings):
 
     RAG_GRADER_PASSAGE_CHARS: int = 600
 
+    # Clarification & follow-up suggestions
+    # Ask a clarifying question with KB-grounded options when a query is
+    # ambiguous or finds no evidence (instead of "not found").
+    RAG_CLARIFY: bool = True
+
+    # Append related follow-up questions after partial answers.
+    RAG_FOLLOWUP_SUGGESTIONS: bool = True
+
+    # DIRECT-routed messages this short are probed against the KB first.
+    RAG_PROBE_MAX_WORDS: int = 4
+
+    # Near-miss chunks at least this similar feed topic suggestions.
+    RAG_SUGGESTION_MIN_SCORE: float = 0.25
+
+    RAG_MAX_SUGGESTIONS: int = 4
+
     # Sent with internal structured LLM calls (grading). "none" turns off
     # thinking on Ollama reasoning models such as gemma4/qwen3, which
     # otherwise spend the whole token budget reasoning. Empty disables.

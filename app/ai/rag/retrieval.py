@@ -22,6 +22,13 @@ from app.core.exceptions import (
 
 logger = logging.getLogger(__name__)
 
+# Document-control headings make poor follow-up suggestions.
+_BOILERPLATE_SECTION = re.compile(
+    r"\b(distribution list|version control|revision history|document control|"
+    r"table of contents|approval|sign[- ]?off|change log|abbreviations)\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class RetrievedChunk:
@@ -67,6 +74,10 @@ class RetrievalResult:
 
     # Queries run, candidate counts, gating decisions (observability).
     diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    # Sections the search came close to (including near-misses that did
+    # not pass the relevance gate); used to suggest clarifying questions.
+    related_topics: list[dict[str, Any]] = field(default_factory=list)
 
     def get_distinct_sources(self) -> list[DistinctSource]:
         sources_map: dict[uuid.UUID, DistinctSource] = {}
@@ -418,6 +429,10 @@ class RetrievalService:
             chunks=chunks,
             knowledge_base_ids=knowledge_base_ids,
             total_results=len(chunks),
+            related_topics=self._related_topics(
+                candidates.values(),
+                exclude_ids=exclude_ids,
+            ),
             diagnostics={
                 "queries": all_queries,
                 "candidates": len(candidates),
@@ -468,6 +483,51 @@ class RetrievalService:
 
         kept = [c for c in candidates if c.rerank >= settings.RAG_RERANK_THRESHOLD]
         return sorted(kept, key=lambda c: c.rerank, reverse=True)
+
+    @staticmethod
+    def _related_topics(
+        candidates: Any,
+        *,
+        exclude_ids: set[str],
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Distinct (document, section) pairs the query came close to."""
+
+        floor = settings.RAG_SUGGESTION_MIN_SCORE
+        ranked = sorted(
+            (
+                c for c in candidates
+                if c.id not in exclude_ids
+                and ((c.dense or 0.0) >= floor or c.coverage >= 0.5)
+            ),
+            key=lambda c: c.rrf,
+            reverse=True,
+        )
+
+        topics: list[dict[str, Any]] = []
+        seen: set[tuple[Any, Any]] = set()
+
+        for cand in ranked:
+            match = cand.match
+            key = (match.get("file_name"), match.get("section"))
+            leaf = (match.get("section") or "").split(">")[-1]
+            if key in seen or _BOILERPLATE_SECTION.search(leaf):
+                continue
+            seen.add(key)
+            topics.append(
+                {
+                    "document_id": str(match.get("document_id")),
+                    "file_name": match.get("file_name"),
+                    "section": match.get("section"),
+                    "page": match.get("page"),
+                    "preview": " ".join((match.get("text") or "").split())[:160],
+                    "score": round(cand.dense or 0.0, 4),
+                }
+            )
+            if len(topics) >= limit:
+                break
+
+        return topics
 
     @staticmethod
     def _diversify(

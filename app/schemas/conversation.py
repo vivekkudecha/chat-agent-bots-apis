@@ -145,6 +145,12 @@ class MessageResponse(BaseModel):
         default_factory=list,
     )
 
+    suggestions: list[str] = Field(
+        default_factory=list,
+    )
+
+    needs_clarification: bool = False
+
     created_at: datetime
 
     model_config = ConfigDict(
@@ -183,6 +189,12 @@ class MessageResponse(BaseModel):
         self.sources = normalized
         if normalized or "sources" in self.metadata_:
             self.metadata_["sources"] = normalized
+        stored = self.metadata_.get("suggestions")
+        if not self.suggestions and isinstance(stored, list):
+            self.suggestions = [str(item) for item in stored if item]
+        self.needs_clarification = self.needs_clarification or bool(
+            self.metadata_.get("needs_clarification")
+        )
         return self
 
 

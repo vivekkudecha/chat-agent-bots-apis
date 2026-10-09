@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from dataclasses import replace
 from typing import Any, Literal, TYPE_CHECKING, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -10,9 +11,11 @@ from langgraph.graph import END, START, StateGraph
 from app.ai.agent.router import AgentRouter
 from app.ai.agent.state import RouteType
 from app.ai.agent.tools import ToolRegistry
-from app.ai.llm.provider import LLMProvider, LLMResponse
+from app.ai.llm.provider import LLMProvider, LLMResponse, LLMUsage
 from app.ai.llm.sources import SourceCandidate
 from app.ai.rag.agentic import EvidenceGrader
+from app.ai.rag.clarify import FollowUpSuggester
+from app.ai.rag.sparse import BM25SparseEncoder
 from app.config import settings
 from app.ai.agent.conversation_context import ConversationContextBuilder
 
@@ -74,6 +77,15 @@ class ChatAgentState(TypedDict, total=False):
     rag_evidence: list[Any]
     rag_decision: str
     rag_trace: list[dict[str, Any]]
+    rag_topics: list[dict[str, Any]]
+    rag_kb_ids: list[uuid.UUID]
+    rag_ambiguous: bool
+    rag_answerable: str
+
+    # Clarification / follow-up suggestions
+    suggestions: list[str]
+    needs_clarification: bool
+    suggest_followups: bool
 
     # Tools
     tool_calls: list[dict[str, Any]]
@@ -97,7 +109,9 @@ class ChatAgentGraph:
              -> DIRECT -> generate
              -> RAG    -> retrieve -> grade_evidence
                             -> retrieve (refined query, bounded rounds)
-                            -> generate / TOOL fallback
+                            -> generate [-> suggest_followups when partial]
+                            -> clarify (ambiguous / nothing found)
+                            -> TOOL fallback
              -> TOOL   -> tool_dispatch -> generate
           -> END
 
@@ -152,6 +166,7 @@ Briefly tell the user that live information could not be retrieved reliably.
         self.tool_registry = tool_registry
         self.guardrails = guardrail_service
         self.grader = EvidenceGrader(llm_provider)
+        self.suggester = FollowUpSuggester(llm_provider)
         self.context_builder = ConversationContextBuilder(
             max_turns=8,
             max_message_chars=1500,
@@ -173,6 +188,8 @@ Briefly tell the user that live information could not be retrieved reliably.
         workflow.add_node("grade_evidence", self._grade_evidence_node)
         workflow.add_node("tool_dispatch", self._tool_node)
         workflow.add_node("generate", self._generate_node)
+        workflow.add_node("clarify", self._clarify_node)
+        workflow.add_node("suggest_followups", self._suggest_followups_node)
 
         workflow.add_edge(START, "context_builder")
         workflow.add_edge("context_builder", "supervisor")
@@ -196,11 +213,21 @@ Briefly tell the user that live information could not be retrieved reliably.
                 "retrieve": "retrieve",
                 "generate": "generate",
                 "tool": "tool_dispatch",
+                "clarify": "clarify",
             },
         )
 
         workflow.add_edge("tool_dispatch", "generate")
-        workflow.add_edge("generate", END)
+        workflow.add_conditional_edges(
+            "generate",
+            lambda state: "suggest_followups" if state.get("suggest_followups") else "end",
+            {
+                "suggest_followups": "suggest_followups",
+                "end": END,
+            },
+        )
+        workflow.add_edge("suggest_followups", END)
+        workflow.add_edge("clarify", END)
 
         return workflow.compile()
 
@@ -257,14 +284,51 @@ Briefly tell the user that live information could not be retrieved reliably.
             decision.tool_args,
         )
 
+        route = decision.route.value
+        reason = decision.reason
+
+        if route == RouteType.DIRECT.value and await self._kb_probe(state):
+            route = RouteType.RAG.value
+            reason = f"Short query matches the knowledge base (supervisor: {reason})"
+            logger.info("KB probe: rerouting short DIRECT query to RAG")
+
         return {
-            "route": decision.route.value,
-            "route_reason": decision.reason,
+            "route": route,
+            "route_reason": reason,
             "resolved_query": decision.query,
             "selected_tool": decision.tool_name,
             "tool_args": decision.tool_args or {},
             "context_mode": getattr(decision, "context_mode", "NONE"),
         }
+
+    async def _kb_probe(self, state: ChatAgentState) -> bool:
+        """
+        Short messages ("LSA", "relocation policy") often look general to
+        the supervisor. Search the KB first; reroute to RAG only when a
+        chunk passes the relevance gate, so greetings stay DIRECT.
+        """
+        if not (state.get("has_kb") and state.get("db_session")):
+            return False
+
+        encoder = getattr(self.retrieval_service, "encoder", None) or BM25SparseEncoder()
+        terms = encoder.tokenize(state.get("query", ""))
+        if not 1 <= len(terms) <= settings.RAG_PROBE_MAX_WORDS:
+            return False
+
+        try:
+            probe = await self.retrieval_service.retrieve_for_bot(
+                state["db_session"],
+                user_id=state["user_id"],
+                bot_id=state["bot_id"],
+                query=state["query"],
+                top_k=3,
+                score_threshold=settings.DEFAULT_SCORE_THRESHOLD,
+            )
+        except Exception as exc:
+            logger.warning("KB probe failed: %s", exc)
+            return False
+
+        return bool(probe and probe.chunks)
 
     @staticmethod
     def _route_decision(
@@ -458,6 +522,17 @@ Briefly tell the user that live information could not be retrieved reliably.
 
         final = self._evidence_result(state, retrieval, kept, trace)
 
+        answerable = grade.answerable if grade and grade.parsed else "yes"
+        flagged = bool(grade and grade.parsed and grade.ambiguous)
+        # Ask back only when the vague question also has no usable answer;
+        # otherwise answer what was found and offer follow-ups.
+        ambiguous = flagged and (answerable == "no" or not kept)
+        followups = (
+            answerable != "yes"
+            or flagged
+            or self._is_keyword_query(state["query"])
+        )
+
         return {
             "retrieval": final,
             "distinct_sources": final.get_distinct_sources() if final else [],
@@ -465,7 +540,45 @@ Briefly tell the user that live information could not be retrieved reliably.
             "rag_decision": decision,
             "rag_pending_queries": [grade.next_query] if decision == "refine" else [],
             "rag_trace": trace,
+            "rag_topics": self._merge_topics(
+                state.get("rag_topics") or [],
+                getattr(retrieval, "related_topics", None) or [],
+            ),
+            "rag_kb_ids": list(
+                getattr(retrieval, "knowledge_base_ids", None)
+                or state.get("rag_kb_ids")
+                or []
+            ),
+            "rag_ambiguous": ambiguous,
+            "rag_answerable": answerable,
+            "suggest_followups": (
+                settings.RAG_FOLLOWUP_SUGGESTIONS
+                and decision == "done"
+                and bool(kept)
+                and followups
+            ),
         }
+
+    @staticmethod
+    def _is_keyword_query(query: str) -> bool:
+        """"LSA", "relocation policy": a topic, not a specific question."""
+        text = (query or "").strip()
+        return 0 < len(text.split()) <= 3 and not text.endswith(("?", "？", "؟"))
+
+    @staticmethod
+    def _merge_topics(
+        existing: list[dict[str, Any]],
+        new: list[dict[str, Any]],
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[Any, Any]] = set()
+        for topic in [*existing, *new]:
+            key = (topic.get("file_name"), topic.get("section"))
+            if key not in seen:
+                seen.add(key)
+                merged.append(topic)
+        return merged[:limit]
 
     @staticmethod
     def _drop_covered(evidence: list[Any], chunks: list[Any]) -> list[Any]:
@@ -509,10 +622,14 @@ Briefly tell the user that live information could not be retrieved reliably.
     def _kb_relevance_gate(
         self,
         state: ChatAgentState,
-    ) -> Literal["retrieve", "generate", "tool"]:
+    ) -> Literal["retrieve", "generate", "tool", "clarify"]:
         if state.get("rag_decision") == "refine":
             logger.info("Evidence incomplete -> refining retrieval")
             return "retrieve"
+
+        if settings.RAG_CLARIFY and state.get("rag_ambiguous"):
+            logger.info("Ambiguous question -> asking for clarification")
+            return "clarify"
 
         retrieval = state.get("retrieval")
 
@@ -542,6 +659,10 @@ Briefly tell the user that live information could not be retrieved reliably.
             )
             return "tool"
 
+        if settings.RAG_CLARIFY:
+            logger.info("RAG returned no usable data -> asking for clarification")
+            return "clarify"
+
         logger.info(
             "RAG returned no usable data and no web fallback is available"
         )
@@ -549,6 +670,117 @@ Briefly tell the user that live information could not be retrieved reliably.
 
     # Backward compatibility
     _post_retrieve_gate = _kb_relevance_gate
+
+    # ------------------------------------------------------------------
+    # Clarification & follow-ups
+    # ------------------------------------------------------------------
+
+    async def _clarify_node(
+        self,
+        state: ChatAgentState,
+    ) -> dict[str, Any]:
+        """
+        Ask a clarifying question with options grounded in what the KB
+        contains, instead of answering "not found" or guessing.
+        """
+        model = state.get("model_key", "")
+        topics = await self._guard_topics(state, list(state.get("rag_topics") or []))
+
+        titles: list[str] = []
+        vector_store = getattr(self.retrieval_service, "vector_store", None)
+        if not topics and vector_store is not None and state.get("rag_kb_ids"):
+            titles = await vector_store.list_document_titles(
+                user_id=state["user_id"],
+                knowledge_base_ids=state["rag_kb_ids"],
+            )
+
+        clarification = await self.suggester.clarify(
+            question=state["query"],
+            topics=topics,
+            model=model,
+            document_titles=titles,
+            found_nothing=not state.get("rag_evidence"),
+        )
+
+        response = LLMResponse(
+            content=clarification.text,
+            model=model,
+            finish_reason="clarification",
+            usage=clarification.usage,
+        )
+
+        return {
+            "response": response,
+            "response_content": response.content,
+            "usage": response.usage,
+            "retrieval": None,
+            "source_candidates": [],
+            "suggestions": clarification.suggestions,
+            "needs_clarification": True,
+            "tool_calls": list(state.get("tool_calls") or []),
+            "tool_results": list(state.get("tool_results") or []),
+        }
+
+    async def _suggest_followups_node(
+        self,
+        state: ChatAgentState,
+    ) -> dict[str, Any]:
+        """After a partial answer, offer related questions the KB can answer."""
+        response = state.get("response")
+        if response is None or not response.content:
+            return {}
+
+        topics = await self._guard_topics(state, list(state.get("rag_topics") or []))
+        suggestions, usage = await self.suggester.related(
+            question=state.get("resolved_query") or state["query"],
+            answer=response.content,
+            topics=topics,
+            model=state.get("model_key", ""),
+        )
+        if not suggestions:
+            return {}
+
+        content = response.content + FollowUpSuggester.format_followups(suggestions)
+        combined = LLMUsage(
+            input_tokens=response.usage.input_tokens + usage.input_tokens,
+            output_tokens=response.usage.output_tokens + usage.output_tokens,
+            total_tokens=response.usage.total_tokens + usage.total_tokens,
+        )
+        updated = replace(response, content=content, usage=combined)
+
+        return {
+            "response": updated,
+            "response_content": content,
+            "usage": combined,
+            "suggestions": suggestions,
+        }
+
+    async def _guard_topics(
+        self,
+        state: ChatAgentState,
+        topics: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Near-miss previews skipped retrieval guardrails; apply them now."""
+        if not self.guardrails or not state.get("db_session"):
+            return topics
+
+        from app.ai.guardrails.base import GuardrailStage
+
+        guarded = []
+        for topic in topics:
+            preview = topic.get("preview")
+            if preview:
+                evaluation = await self.guardrails.evaluate(
+                    state["db_session"],
+                    bot_id=state["bot_id"],
+                    user_id=state["user_id"],
+                    conversation_id=state["conversation_id"],
+                    stage=GuardrailStage.RETRIEVAL,
+                    text=preview,
+                )
+                topic = {**topic, "preview": evaluation.final_text}
+            guarded.append(topic)
+        return guarded
 
     # ------------------------------------------------------------------
     # Tool execution

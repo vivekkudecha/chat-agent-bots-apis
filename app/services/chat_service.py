@@ -106,6 +106,11 @@ class ChatResult:
 
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
+    # Follow-up questions offered to the user (clarification or partial answer).
+    suggestions: list[str] = field(default_factory=list)
+
+    needs_clarification: bool = False
+
 
 class ChatService:
 
@@ -469,6 +474,17 @@ class ChatService:
             )
         ]
 
+        # Same rule for suggestions: keep only those still present verbatim
+        # in the guarded text, so redacted/replaced options never leak.
+        suggestions = [
+            suggestion
+            for suggestion in graph_output.get("suggestions") or []
+            if suggestion in safe_output
+        ]
+        needs_clarification = bool(
+            graph_output.get("needs_clarification")
+        )
+
         serialized_sources = [
             {
                 "document_id": str(s.document_id) if s.document_id else None,
@@ -535,6 +551,8 @@ class ChatService:
                     "tool_calls": graph_output.get("tool_calls", []),
                     "tool_results_count": len(graph_output.get("tool_results", [])),
                     "sources": serialized_sources,
+                    "suggestions": suggestions,
+                    "needs_clarification": needs_clarification,
                 },
             )
         )
@@ -642,6 +660,8 @@ class ChatService:
             sources=sources,
             warnings=warnings,
             tool_calls=graph_output.get("tool_calls", []),
+            suggestions=suggestions,
+            needs_clarification=needs_clarification,
         )
 
     # =====================================================
