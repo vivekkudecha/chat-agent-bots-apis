@@ -289,7 +289,7 @@ class AgenticLoopTests(unittest.IsolatedAsyncioTestCase):
         graph._generate_node = generate
         graph.app = graph._build_graph()
         state = {"user_id": USER, "bot_id": uuid.uuid4(), "conversation_id": uuid.uuid4(),
-                 "query": "q1", "has_kb": True, "db_session": object(), "model_key": "m",
+                 "query": "What does q1 say?", "has_kb": True, "db_session": object(), "model_key": "m",
                  "enable_web_search": web,
                  "available_tools": [{"function": {"name": "web_search"}}] if web else []}
         with patch("app.ai.agent.graph.settings.RAG_MAX_ROUNDS", max_rounds):

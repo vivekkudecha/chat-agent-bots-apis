@@ -118,7 +118,7 @@ def chunk(i, score=0.6):
 
 class ClarifyGraphTests(unittest.IsolatedAsyncioTestCase):
     async def run_graph(self, *, retrievals, llm_replies, supervisor_route="rag", query="LSA",
-                        web=False, probe=None, settings_patch=None):
+                        web=False, probe=None, settings_patch=None, history=()):
         retrieval = SimpleNamespace(
             retrieve_for_bot=AsyncMock(side_effect=[*(probe or []), *retrievals]),
             encoder=BM25SparseEncoder(),
@@ -141,6 +141,7 @@ class ClarifyGraphTests(unittest.IsolatedAsyncioTestCase):
         graph.app = graph._build_graph()
         state = {"user_id": USER, "bot_id": uuid.uuid4(), "conversation_id": uuid.uuid4(), "query": query,
                  "has_kb": True, "db_session": object(), "model_key": "m", "enable_web_search": web,
+                 "history": list(history),
                  "available_tools": [{"function": {"name": "web_search"}}] if web else []}
         with patch.multiple("app.ai.agent.graph.settings", RAG_MAX_ROUNDS=1, **(settings_patch or {})):
             out = await graph.run(state)
@@ -151,6 +152,7 @@ class ClarifyGraphTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ambiguous_question_gets_clarification(self):
         out, generated, _, _, _ = await self.run_graph(
+            query="tell me what the rules say about it",
             retrievals=[self.result([chunk(1), chunk(2)])],
             llm_replies=['{"relevant": [1, 2], "answerable": "no", "ambiguous": true}',
                          '{"question": "Which LSA detail?", "suggestions": ["How many LSA leave days do I get?"]}'],
@@ -191,8 +193,10 @@ class ClarifyGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("query", generated)
         self.assertFalse(out.get("needs_clarification"))
 
-    async def test_partial_answer_gets_followups(self):
+    async def test_partial_answer_gets_followups_when_enabled(self):
         out, generated, _, _, _ = await self.run_graph(
+            query="What does the policy say about long service?",
+            settings_patch={"RAG_FOLLOWUP_SUGGESTIONS": True},
             retrievals=[self.result([chunk(1)])],
             llm_replies=['{"relevant": [1], "answerable": "partial", "next_query": ""}',
                          '{"suggestions": ["What gift is given at 10 years?"]}'],
@@ -203,23 +207,49 @@ class ClarifyGraphTests(unittest.IsolatedAsyncioTestCase):
                          "Partial answer.\n\n**You might also ask:**\n- What gift is given at 10 years?")
         self.assertFalse(out.get("needs_clarification"))
 
-    async def test_ambiguous_but_answered_gets_answer_and_followups(self):
-        out, generated, _, _, _ = await self.run_graph(
+    async def test_ambiguous_but_answered_gets_plain_answer(self):
+        out, generated, _, model, _ = await self.run_graph(
             retrievals=[self.result([chunk(1)])],
-            llm_replies=['{"relevant": [1], "answerable": "yes", "ambiguous": true}',
-                         '{"suggestions": ["How many LSA leave days do I get?"]}'],
-            query="leave",
+            llm_replies=['{"relevant": [1], "answerable": "yes", "ambiguous": true}'],
+            query="how does leave work for employees",
         )
         self.assertIn("query", generated)
         self.assertFalse(out.get("needs_clarification"))
-        self.assertEqual(out["suggestions"], ["How many LSA leave days do I get?"])
+        self.assertFalse(out.get("suggestions"))
+        self.assertEqual(model.chat.await_count, 1)
 
-    async def test_keyword_query_answered_fully_still_gets_followups(self):
-        out, _, _, _, _ = await self.run_graph(
-            retrievals=[self.result([chunk(1)])],
-            llm_replies=['{"relevant": [1], "answerable": "yes"}', '{"suggestions": ["What is the LSA gift?"]}'],
+    async def test_topic_query_asks_first_without_grading(self):
+        out, generated, _, model, _ = await self.run_graph(
+            retrievals=[self.result([chunk(1), chunk(2)])],
+            llm_replies=['{"question": "What would you like to know about LSA?", '
+                         '"suggestions": ["How many LSA leave days do I get?", "What is the LSA gift?"]}'],
         )
-        self.assertEqual(out["suggestions"], ["What is the LSA gift?"])
+        self.assertEqual(generated, {})
+        self.assertTrue(out["needs_clarification"])
+        self.assertEqual(out["suggestions"], ["How many LSA leave days do I get?", "What is the LSA gift?"])
+        self.assertEqual(model.chat.await_count, 1)
+        prompt = model.chat.await_args.kwargs["messages"][1]["content"]
+        self.assertIn("only names a topic", prompt)
+
+    async def test_reply_after_clarification_is_answered(self):
+        history = [{"role": "user", "content": "LSA"},
+                   {"role": "assistant", "content": "Which part?", "metadata": {"needs_clarification": True}}]
+        out, generated, _, _, _ = await self.run_graph(
+            query="leave days", history=history,
+            retrievals=[self.result([chunk(1)])],
+            llm_replies=['{"relevant": [1], "answerable": "yes"}'],
+        )
+        self.assertIn("query", generated)
+        self.assertFalse(out.get("needs_clarification"))
+
+    async def test_partial_answer_has_no_followups_by_default(self):
+        out, _, _, model, _ = await self.run_graph(
+            query="What does the policy say about long service?",
+            retrievals=[self.result([chunk(1)])],
+            llm_replies=['{"relevant": [1], "answerable": "partial", "next_query": ""}'],
+        )
+        self.assertFalse(out.get("suggestions"))
+        self.assertEqual(model.chat.await_count, 1)
 
     async def test_full_answer_has_no_followups(self):
         out, _, _, model, _ = await self.run_graph(

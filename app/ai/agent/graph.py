@@ -81,6 +81,7 @@ class ChatAgentState(TypedDict, total=False):
     rag_kb_ids: list[uuid.UUID]
     rag_ambiguous: bool
     rag_answerable: str
+    rag_clarify_reason: str
 
     # Clarification / follow-up suggestions
     suggestions: list[str]
@@ -465,6 +466,42 @@ Briefly tell the user that live information could not be retrieved reliably.
         passages = evidence + new_chunks
         decision = "done"
 
+        # A bare topic ("LSA") has many possible answers: ask which aspect
+        # the user wants, offering what the KB covers, instead of guessing.
+        # Not right after a clarification, so the user's reply is answered.
+        topic_only = (
+            settings.RAG_CLARIFY
+            and bool(passages)
+            and self._is_keyword_query(state["query"], settings.RAG_CLARIFY_MAX_WORDS)
+            and not self._after_clarification(state)
+        )
+
+        if topic_only:
+            logger.info("Topic-only query %r -> clarify before answering", state["query"])
+            return {
+                "retrieval": self._evidence_result(state, retrieval, passages, trace),
+                "rag_evidence": passages,
+                "rag_decision": "done",
+                "rag_pending_queries": [],
+                "rag_trace": trace + [{
+                    "round": rag_round,
+                    "queries": (getattr(retrieval, "diagnostics", {}) or {}).get("queries"),
+                    "retrieved": len(new_chunks),
+                    "kept": len(passages),
+                    "grade": None,
+                    "decision": "clarify_topic",
+                }],
+                "rag_topics": self._merge_topics(
+                    state.get("rag_topics") or [],
+                    getattr(retrieval, "related_topics", None) or [],
+                ),
+                "rag_kb_ids": list(getattr(retrieval, "knowledge_base_ids", None) or []),
+                "rag_ambiguous": True,
+                "rag_answerable": "unknown",
+                "rag_clarify_reason": "topic",
+                "suggest_followups": False,
+            }
+
         if not settings.RAG_AGENTIC or not new_chunks:
             kept = passages
             grade = None
@@ -527,11 +564,7 @@ Briefly tell the user that live information could not be retrieved reliably.
         # Ask back only when the vague question also has no usable answer;
         # otherwise answer what was found and offer follow-ups.
         ambiguous = flagged and (answerable == "no" or not kept)
-        followups = (
-            answerable != "yes"
-            or flagged
-            or self._is_keyword_query(state["query"])
-        )
+        followups = answerable == "partial"
 
         return {
             "retrieval": final,
@@ -560,10 +593,23 @@ Briefly tell the user that live information could not be retrieved reliably.
         }
 
     @staticmethod
-    def _is_keyword_query(query: str) -> bool:
+    def _is_keyword_query(query: str, max_words: int) -> bool:
         """"LSA", "relocation policy": a topic, not a specific question."""
         text = (query or "").strip()
-        return 0 < len(text.split()) <= 3 and not text.endswith(("?", "？", "؟"))
+        return 0 < len(text.split()) <= max_words and not text.endswith(("?", "？", "؟"))
+
+    @staticmethod
+    def _after_clarification(state: ChatAgentState) -> bool:
+        """True when the previous assistant turn asked a clarifying question."""
+        for message in reversed(state.get("history") or []):
+            if isinstance(message, dict):
+                role, metadata = message.get("role"), message.get("metadata") or message.get("metadata_")
+            else:
+                role, metadata = getattr(message, "role", None), getattr(message, "metadata_", None)
+            role = getattr(role, "value", role)
+            if role == "assistant":
+                return bool((metadata or {}).get("needs_clarification"))
+        return False
 
     @staticmethod
     def _merge_topics(
@@ -700,6 +746,7 @@ Briefly tell the user that live information could not be retrieved reliably.
             model=model,
             document_titles=titles,
             found_nothing=not state.get("rag_evidence"),
+            topic=state.get("rag_clarify_reason") == "topic",
         )
 
         response = LLMResponse(

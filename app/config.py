@@ -221,8 +221,13 @@ class Settings(BaseSettings):
     # ambiguous or finds no evidence (instead of "not found").
     RAG_CLARIFY: bool = True
 
-    # Append related follow-up questions after partial answers.
-    RAG_FOLLOWUP_SUGGESTIONS: bool = True
+    # Append related follow-up questions after partial answers (opt-in).
+    RAG_FOLLOWUP_SUGGESTIONS: bool = False
+
+    # Messages of at most this many words without a question ("LSA",
+    # "relocation policy") are treated as a topic: ask what the user wants
+    # to know about it (with KB options) before answering. 0 disables.
+    RAG_CLARIFY_MAX_WORDS: int = 2
 
     # DIRECT-routed messages this short are probed against the KB first.
     RAG_PROBE_MAX_WORDS: int = 4

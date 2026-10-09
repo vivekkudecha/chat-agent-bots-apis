@@ -69,6 +69,7 @@ class FollowUpSuggester:
         model: str,
         document_titles: list[str] | None = None,
         found_nothing: bool = False,
+        topic: bool = False,
     ) -> Clarification:
 
         if not topics and document_titles:
@@ -82,11 +83,15 @@ class FollowUpSuggester:
                 ),
             )
 
-        situation = (
-            "The knowledge base has no passage that answers the message."
-            if found_nothing
-            else "The message is too short or unclear to know exactly what the user wants."
-        )
+        if found_nothing:
+            situation = "The knowledge base has no passage that answers the message."
+        elif topic:
+            situation = (
+                "The message only names a topic the knowledge base covers. Do not answer; "
+                "ask which aspect of it the user wants to know about."
+            )
+        else:
+            situation = "The message is too short or unclear to know exactly what the user wants."
 
         prompt = (
             f'USER MESSAGE: "{question}"\n'

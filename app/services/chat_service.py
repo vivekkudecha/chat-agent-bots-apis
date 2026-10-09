@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.ai.llm.sources import select_cited_sources
+from app.ai.llm.sources import select_cited_sources, strip_citation_markers
 from app.ai.guardrails import (
     GuardrailStage,
 )
@@ -485,6 +485,10 @@ class ChatService:
             graph_output.get("needs_clarification")
         )
 
+        # Citation markers ([KB1]) were needed only to pick sources above;
+        # the user sees the sources list instead.
+        display_output = strip_citation_markers(safe_output)
+
         serialized_sources = [
             {
                 "document_id": str(s.document_id) if s.document_id else None,
@@ -526,7 +530,7 @@ class ChatService:
                     conversation.id
                 ),
                 role="assistant",
-                content=safe_output,
+                content=display_output,
                 model_id=model.id,
                 input_tokens=(
                     response
@@ -651,7 +655,7 @@ class ChatService:
             message_id=(
                 assistant_message.id
             ),
-            content=safe_output,
+            content=display_output,
             model=model.model_key,
             input_tokens=input_tokens,
             output_tokens=output_tokens,

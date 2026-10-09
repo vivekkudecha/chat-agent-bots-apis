@@ -97,6 +97,8 @@ class ChatSourcesTests(unittest.IsolatedAsyncioTestCase):
         irrelevant = chunk("The cafeteria opens at nine.")
         result, saved = await self.run_chat("You receive 20 days of leave. [KB1]", [relevant, irrelevant])
         self.assertEqual([s.document_id for s in result.sources], [relevant.document_id])
+        self.assertEqual(result.content, "You receive 20 days of leave.")
+        self.assertEqual(saved["content"], "You receive 20 days of leave.")
         self.assertEqual(saved["metadata"]["source_count"], 1)
         self.assertEqual(len(saved["metadata"]["sources"]), 1)
 
@@ -175,6 +177,14 @@ class ChatSourcesTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CitationSelectionTests(unittest.TestCase):
+    def test_strip_citation_markers_keeps_code(self):
+        from app.ai.llm.sources import strip_citation_markers
+        text = "Twenty days [KB1]. Gift box [KB2, WEB1].\n```\nx = data[KB1]\n```\nUse `[KB3]` literally."
+        self.assertEqual(
+            strip_citation_markers(text),
+            "Twenty days. Gift box.\n```\nx = data[KB1]\n```\nUse `[KB3]` literally.",
+        )
+
     def test_markdown_code_and_escaped_markers_are_not_citations(self):
         candidate = SourceCandidate("KB1", uuid.uuid4(), uuid.UUID(int=1), "policy.pdf", "Leave", 0.8)
         for answer in ["~~~text\n[KB1]\n~~~", "Example:\n\n    [KB1]", "``[KB1]``", r"\[KB1]", "```text\n[KB1]"]:

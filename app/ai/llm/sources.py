@@ -81,6 +81,27 @@ def _check_dynamic_grounding(answer: str, candidate_text: str) -> bool:
     return False
 
 
+_CITATION_MARKER = re.compile(
+    r"[ \t]*\[(?:KB|WEB)[1-9]\d*(?:\s*[,;]\s*(?:KB|WEB)[1-9]\d*)*\]"
+)
+_CODE = re.compile(r"(```.*?```|`[^`\n]*`)", re.DOTALL)
+
+
+def strip_citation_markers(text: str) -> str:
+    """
+    Remove [KB1] / [WEB2, KB3] markers from user-facing text. They exist
+    only so sources can be selected; the sources list carries citations.
+    Code blocks and inline code are left untouched.
+    """
+    if not text or "[" not in text:
+        return text
+
+    parts = _CODE.split(text)
+    for i in range(0, len(parts), 2):
+        parts[i] = _CITATION_MARKER.sub("", parts[i])
+    return "".join(parts)
+
+
 def select_cited_sources(
     answer: str, candidates: list[SourceCandidate],
 ) -> list[dict[str, Any]]:
